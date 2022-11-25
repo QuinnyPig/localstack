@@ -4,8 +4,9 @@ import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from http import HTTPStatus
-from typing import Dict, List, Union
+from typing import Any, Dict, List, Union
 
+from moto.apigatewayv2.exceptions import BadRequestException
 from requests import Response
 
 from localstack import config
@@ -27,6 +28,7 @@ from localstack.utils import common
 from localstack.utils.aws import aws_stack
 from localstack.utils.aws.arns import extract_region_from_arn
 from localstack.utils.aws.aws_responses import LambdaResponse, requests_response
+from localstack.utils.aws.templating import VtlTemplate
 from localstack.utils.collections import remove_attributes
 from localstack.utils.common import make_http_request, to_str
 from localstack.utils.http import canonicalize_headers, parse_request_data
@@ -430,6 +432,20 @@ class MockIntegration(BackendIntegration):
 
 
 class StepFunctionIntegration(BackendIntegration):
+    @classmethod
+    def _validate_required_params(cls, request_parameters: Dict[str, Any]) -> None:
+        if not request_parameters:
+            raise BadRequestException("Missing required parameters")
+        # stateMachineArn and input are required
+        state_machine_arn_param = request_parameters.get("StateMachineArn")
+        input_param = request_parameters.get("Input")
+
+        if not state_machine_arn_param:
+            raise BadRequestException("StateMachineArn")
+
+        if not input_param:
+            raise BadRequestException("Input")
+
     def invoke(self, invocation_context: ApiInvocationContext):
         uri = (
             invocation_context.integration.get("uri")
@@ -438,7 +454,9 @@ class StepFunctionIntegration(BackendIntegration):
         )
         action = uri.split("/")[-1]
 
-        if APPLICATION_JSON in invocation_context.integration.get("requestTemplates", {}):
+        if invocation_context.integration.get("type") == "AWS_PROXY":
+            payload = self._create_request_parameters(invocation_context)
+        elif APPLICATION_JSON in invocation_context.integration.get("requestTemplates", {}):
             payload = self.request_templates.render(invocation_context)
             payload = json.loads(payload)
         else:
@@ -493,3 +511,22 @@ class StepFunctionIntegration(BackendIntegration):
         invocation_context.response = response
         response._content = self.response_templates.render(invocation_context)
         return response
+
+    def _create_request_parameters(self, invocation_context):
+        request_parameters = invocation_context.integration.get("requestParameters", {})
+        self._validate_required_params(request_parameters)
+
+        variables = {
+            "request": {
+                "header": invocation_context.headers,
+                "querystring": invocation_context.query_params(),
+                "body": invocation_context.data_as_string(),
+                "context": invocation_context.context or {},
+                "stage_variables": invocation_context.stage_variables or {},
+            }
+        }
+        rendered_input = VtlTemplate().render_vtl(request_parameters.get("Input"), variables)
+        return {
+            "stateMachineArn": request_parameters.get("StateMachineArn"),
+            "input": rendered_input
+        }
