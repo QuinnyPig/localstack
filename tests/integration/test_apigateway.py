@@ -37,6 +37,7 @@ from localstack.services.apigateway.helpers import (
     path_based_url,
 )
 from localstack.services.awslambda.lambda_api import add_event_source, use_docker
+from localstack.services.awslambda.lambda_utils import LAMBDA_RUNTIME_PYTHON39
 from localstack.services.generic_proxy import ProxyListener
 from localstack.services.infra import start_proxy
 from localstack.utils import testutil
