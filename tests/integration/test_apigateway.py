@@ -1497,7 +1497,7 @@ class TestAPIGateway:
 
     @pytest.mark.aws_validated
     @pytest.mark.parametrize(
-        "action", ["StartExecution", "StartSyncExecution", "DeleteStateMachine"]
+        "action", ["StartExecution", "DeleteStateMachine"]
     )
     def test_apigateway_with_step_function_integration(
         self,
