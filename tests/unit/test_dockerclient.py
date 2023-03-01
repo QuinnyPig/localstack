@@ -69,19 +69,45 @@ def test_argument_parsing():
     test_port_string_many_to_one = "-p 9230-9231:9230"
     test_env_string = "-e TEST_ENV_VAR=test_string=123"
     test_mount_string = "-v /var/test:/opt/test"
-    argument_string = f"{test_port_string} {test_env_string} {test_mount_string} {test_port_string_with_host} {test_port_string_many_to_one}"
+    test_network_string = "--network bridge"
+    test_user_string = "-u sbx_user1051"
+    test_platform_string = "--platform linux/arm64"
+    argument_string = " ".join(
+        [
+            test_port_string,
+            test_env_string,
+            test_mount_string,
+            test_port_string_with_host,
+            test_port_string_many_to_one,
+            test_network_string,
+            test_user_string,
+            test_platform_string,
+        ]
+    )
     env_vars = {}
     ports = PortMappings()
     mounts = []
-    Util.parse_additional_flags(argument_string, env_vars, ports, mounts)
+    network = "host"
+    user = "root"
+    platform = "linux/amd64"
+    flags = Util.parse_additional_flags(
+        argument_string, env_vars, ports, mounts, network, user, platform
+    )
     assert env_vars == {"TEST_ENV_VAR": "test_string=123"}
     assert ports.to_str() == "-p 80:8080/udp -p 6000:7000 -p 9230-9231:9230"
     assert mounts == [("/var/test", "/opt/test")]
+    assert flags.network == "bridge"
+    assert flags.user == "sbx_user1051"
+    assert flags.platform == "linux/arm64"
+
     argument_string = (
         "--add-host host.docker.internal:host-gateway --add-host arbitrary.host:127.0.0.1"
     )
-    _, _, _, extra_hosts, _ = Util.parse_additional_flags(argument_string, env_vars, ports, mounts)
-    assert {"host.docker.internal": "host-gateway", "arbitrary.host": "127.0.0.1"} == extra_hosts
+    flags = Util.parse_additional_flags(argument_string, env_vars, ports, mounts)
+    assert {
+        "host.docker.internal": "host-gateway",
+        "arbitrary.host": "127.0.0.1",
+    } == flags.extra_hosts
 
     with pytest.raises(NotImplementedError):
         argument_string = "--somerandomargument"
@@ -92,30 +118,47 @@ def test_argument_parsing():
 
     # Test windows paths
     argument_string = r'-v "C:\Users\SomeUser\SomePath:/var/task"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [(r"C:\Users\SomeUser\SomePath", "/var/task")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [(r"C:\Users\SomeUser\SomePath", "/var/task")]
     argument_string = r'-v "C:\Users\SomeUser\SomePath:/var/task:ro"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [(r"C:\Users\SomeUser\SomePath", "/var/task")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [(r"C:\Users\SomeUser\SomePath", "/var/task")]
     argument_string = r'-v "C:\Users\Some User\Some Path:/var/task:ro"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [(r"C:\Users\Some User\Some Path", "/var/task")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [(r"C:\Users\Some User\Some Path", "/var/task")]
     argument_string = r'-v "/var/test:/var/task:ro"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [("/var/test", "/var/task")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [("/var/test", "/var/task")]
 
     # Test file paths
     argument_string = r'-v "/tmp/test.jar:/tmp/foo bar/test.jar"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [(r"/tmp/test.jar", "/tmp/foo bar/test.jar")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [(r"/tmp/test.jar", "/tmp/foo bar/test.jar")]
     argument_string = r'-v "/tmp/test-foo_bar.jar:/tmp/test-foo_bar2.jar"'
-    _, _, mounts, _, _ = Util.parse_additional_flags(argument_string)
-    assert mounts == [(r"/tmp/test-foo_bar.jar", "/tmp/test-foo_bar2.jar")]
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.mounts == [(r"/tmp/test-foo_bar.jar", "/tmp/test-foo_bar2.jar")]
 
     # Test file paths
     argument_string = r'-v "/tmp/test.jar:/tmp/foo bar/test.jar" --network mynet123'
-    _, _, _, _, network = Util.parse_additional_flags(argument_string)
-    assert network == "mynet123"
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.network == "mynet123"
+
+    # Test labels
+    argument_string = r"--label foo=bar.123"
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.labels == {"foo": "bar.123"}
+    argument_string = r'--label foo="bar 123"'  # test with whitespaces
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.labels == {"foo": "bar 123"}
+    argument_string = r'--label foo1="bar" --label foo2="baz"'  # test with multiple labels
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.labels == {"foo1": "bar", "foo2": "baz"}
+    argument_string = r"--label foo=bar=baz"  # assert label values that contain equal signs
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.labels == {"foo": "bar=baz"}
+    argument_string = r'--label ""'  # assert that we gracefully handle invalid labels
+    flags = Util.parse_additional_flags(argument_string)
+    assert flags.labels == {}
 
 
 def list_in(a, b):

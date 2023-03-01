@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 import requests
@@ -10,64 +11,7 @@ from localstack.utils.files import load_file
 from localstack.utils.strings import short_uid
 from tests.integration.test_apigateway import TEST_IMPORT_PETSTORE_SWAGGER
 
-
-def test_update_rest_api_invalid_api_id(apigateway_client):
-    patchOperations = [{"op": "replace", "path": "/apiKeySource", "value": "AUTHORIZER"}]
-    with pytest.raises(ClientError) as ex:
-        apigateway_client.update_rest_api(restApiId="api_id", patchOperations=patchOperations)
-    assert ex.value.response["Error"]["Code"] == "NotFoundException"
-
-
-# TODO enable/fix test!
-@pytest.mark.skip
-def test_update_rest_api_operation_add_remove(apigateway_client):
-    response = apigateway_client.create_rest_api(name="my_api", description="this is my api")
-    api_id = response["id"]
-    patchOperations = [
-        {"op": "add", "path": "/binaryMediaTypes", "value": "image/png"},
-        {"op": "add", "path": "/binaryMediaTypes", "value": "image/jpeg"},
-    ]
-    response = apigateway_client.update_rest_api(restApiId=api_id, patchOperations=patchOperations)
-    assert response["binaryMediaTypes"] == ["image/png", "image/jpeg"]
-    assert response["description"] == "this is my api"
-    patchOperations = [
-        {"op": "remove", "path": "/binaryMediaTypes", "value": "image/png"},
-        {"op": "remove", "path": "/description"},
-    ]
-    response = apigateway_client.update_rest_api(restApiId=api_id, patchOperations=patchOperations)
-    assert response["binaryMediaTypes"] == ["image/jpeg"]
-    assert response["description"] == ""
-
-
-def test_list_and_delete_apis(apigateway_client):
-    api_name1 = short_uid()
-    api_name2 = short_uid()
-
-    response = apigateway_client.create_rest_api(name=api_name1, description="this is my api")
-    api_id = response["id"]
-    apigateway_client.create_rest_api(name=api_name2, description="this is my api2")
-
-    response = apigateway_client.get_rest_apis()
-    items = [item for item in response["items"] if item["name"] in [api_name1, api_name2]]
-    assert len(items) == (2)
-
-    apigateway_client.delete_rest_api(restApiId=api_id)
-
-    response = apigateway_client.get_rest_apis()
-    items = [item for item in response["items"] if item["name"] in [api_name1, api_name2]]
-    assert len(items) == 1
-
-
-def test_create_rest_api_with_tags(apigateway_client):
-    response = apigateway_client.create_rest_api(
-        name="my_api", description="this is my api", tags={"MY_TAG1": "MY_VALUE1"}
-    )
-    api_id = response["id"]
-
-    response = apigateway_client.get_rest_api(restApiId=api_id)
-
-    assert "tags" in response
-    assert response["tags"] == {"MY_TAG1": "MY_VALUE1"}
+LOG = logging.getLogger(__name__)
 
 
 @pytest.mark.skip
@@ -350,6 +294,7 @@ def test_put_integration_response_with_response_template(apigateway_client):
     }
 
 
+# TODO: add snapshot test!
 def test_put_integration_validation(apigateway_client):
     response = apigateway_client.create_rest_api(name="my_api", description="this is my api")
     api_id = response["id"]
@@ -365,7 +310,7 @@ def test_put_integration_validation(apigateway_client):
 
     http_types = ["HTTP", "HTTP_PROXY"]
     aws_types = ["AWS", "AWS_PROXY"]
-    types_requiring_integration_method = http_types + aws_types
+    types_requiring_integration_method = http_types + ["AWS"]
     types_not_requiring_integration_method = ["MOCK"]
 
     for _type in types_requiring_integration_method:
@@ -460,35 +405,35 @@ def test_put_integration_validation(apigateway_client):
             )
         assert ex.value.response["Error"]["Code"] == "BadRequestException"
         assert ex.value.response["Error"]["Message"] == "Invalid HTTP endpoint specified for URI"
-    for _type in aws_types:
-        # Ensure that the URI is an ARN
-        with pytest.raises(ClientError) as ex:
-            apigateway_client.put_integration(
-                restApiId=api_id,
-                resourceId=root_id,
-                httpMethod="GET",
-                type=_type,
-                uri="non-valid-arn",
-                integrationHttpMethod="POST",
-            )
-        assert ex.value.response["Error"]["Code"] == "BadRequestException"
-        assert ex.value.response["Error"]["Message"] == "Invalid ARN specified in the request"
-    for _type in aws_types:
-        # Ensure that the URI is a valid ARN
-        with pytest.raises(ClientError) as ex:
-            apigateway_client.put_integration(
-                restApiId=api_id,
-                resourceId=root_id,
-                httpMethod="GET",
-                type=_type,
-                uri="arn:aws:iam::0000000000:role/service-role/asdf",
-                integrationHttpMethod="POST",
-            )
-        assert ex.value.response["Error"]["Code"] == "BadRequestException"
-        assert (
-            ex.value.response["Error"]["Message"] == "AWS ARN for integration must contain path or "
-            "action"
+
+    # Ensure that the URI is an ARN
+    with pytest.raises(ClientError) as ex:
+        apigateway_client.put_integration(
+            restApiId=api_id,
+            resourceId=root_id,
+            httpMethod="GET",
+            type="AWS",
+            uri="non-valid-arn",
+            integrationHttpMethod="POST",
         )
+    assert ex.value.response["Error"]["Code"] == "BadRequestException"
+    assert ex.value.response["Error"]["Message"] == "Invalid ARN specified in the request"
+
+    # Ensure that the URI is a valid ARN
+    with pytest.raises(ClientError) as ex:
+        apigateway_client.put_integration(
+            restApiId=api_id,
+            resourceId=root_id,
+            httpMethod="GET",
+            type="AWS",
+            uri="arn:aws:iam::0000000000:role/service-role/asdf",
+            integrationHttpMethod="POST",
+        )
+    assert ex.value.response["Error"]["Code"] == "BadRequestException"
+    assert (
+        ex.value.response["Error"]["Message"] == "AWS ARN for integration must contain path or "
+        "action"
+    )
 
 
 def test_create_domain_names(apigateway_client):

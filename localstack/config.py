@@ -16,6 +16,7 @@ from localstack.constants import (
     DEFAULT_PORT_EDGE,
     DEFAULT_SERVICE_PORTS,
     DEFAULT_VOLUME_DIR,
+    DOCKER_IMAGE_NAME,
     ENV_INTERNAL_TEST_COLLECT_METRIC,
     ENV_INTERNAL_TEST_RUN,
     FALSE_STRINGS,
@@ -261,6 +262,10 @@ def load_environment(profile: str = None):
     dotenv.load_dotenv(path, override=False)
 
 
+def is_persistence_enabled() -> bool:
+    return PERSISTENCE and dirs.data
+
+
 def is_linux():
     return platform.system() == "Linux"
 
@@ -268,7 +273,7 @@ def is_linux():
 def ping(host):
     """Returns True if host responds to a ping request"""
     is_windows = platform.system().lower() == "windows"
-    ping_opts = "-n 1" if is_windows else "-c 1"
+    ping_opts = "-n 1 -w 2000" if is_windows else "-c 1 -W 2"
     args = "ping %s %s" % (ping_opts, host)
     return (
         subprocess.call(args, shell=not is_windows, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -397,7 +402,12 @@ LEGACY_EDGE_PROXY = is_env_true("LEGACY_EDGE_PROXY")
 
 # whether legacy s3 is enabled
 # TODO change when asf becomes default: os.environ.get("PROVIDER_OVERRIDE_S3", "") == 'legacy'
-LEGACY_S3_PROVIDER = os.environ.get("PROVIDER_OVERRIDE_S3", "") not in ("asf", "asf_pro")
+LEGACY_S3_PROVIDER = os.environ.get("PROVIDER_OVERRIDE_S3", "") not in (
+    "asf",
+    "asf_pro",
+    "v2",
+    "v2_pro",
+)
 
 # Whether to report internal failures as 500 or 501 errors.
 FAIL_FAST = is_env_true("FAIL_FAST")
@@ -423,6 +433,11 @@ DOCKER_CMD = os.environ.get("DOCKER_CMD", "").strip() or "docker"
 
 # use the command line docker client instead of the new sdk version, might get removed in the future
 LEGACY_DOCKER_CLIENT = is_env_true("LEGACY_DOCKER_CLIENT")
+
+# Docker image to use when starting up containers for port checks
+PORTS_CHECK_DOCKER_IMAGE = (
+    os.environ.get("PORTS_CHECK_DOCKER_IMAGE", "").strip() or DOCKER_IMAGE_NAME
+)
 
 # whether to forward edge requests in-memory (instead of via proxy servers listening on backend ports)
 # TODO: this will likely become the default and may get removed in the future
@@ -649,6 +664,11 @@ LAMBDA_REMOVE_CONTAINERS = (
     os.environ.get("LAMBDA_REMOVE_CONTAINERS", "").lower().strip() not in FALSE_STRINGS
 )
 
+# time in milliseconds until lambda kills the execution environment after the last invocation has been processed
+# can be set to 0 to immediately kill the execution environments after an invocation
+# defaults to 600_000 ms => 10 minutes
+LAMBDA_KEEPALIVE_MS = int(os.environ.get("LAMBDA_KEEPALIVE_MS", "600000"))
+
 # DEV | Only for LS developers. Only applicable to new Lambda provider.
 # whether to explicitly expose port in lambda container when invoking functions in host mode for systems that cannot
 # reach the container via its IPv4 (e.g., macOS https://docs.docker.com/desktop/networking/#i-cannot-ping-my-containers)
@@ -696,6 +716,10 @@ LAMBDA_TRUNCATE_STDOUT = int(os.getenv("LAMBDA_TRUNCATE_STDOUT") or 2000)
 #   The delay between the initial invocation and first retry will be 30s.
 #   The delay between the first retry and the second retry will be 60s
 LAMBDA_RETRY_BASE_DELAY_SECONDS = int(os.getenv("LAMBDA_RETRY_BASE_DELAY") or 60)
+
+# whether Lambda.CreateFunction will block until the function is in a terminal state (active or failed)
+# this technically breaks behavior parity but is provided as a simplification over the default AWS behavior
+LAMBDA_SYNCHRONOUS_CREATE = is_env_true("LAMBDA_SYNCHRONOUS_CREATE")
 
 # A comma-delimited string of stream names and its corresponding shard count to
 # initialize during startup (DEPRECATED).
@@ -793,6 +817,7 @@ CONFIG_ENV_VARS = [
     "LAMBDA_STAY_OPEN_MODE",
     "LAMBDA_TRUNCATE_STDOUT",
     "LAMBDA_RETRY_BASE_DELAY_SECONDS",
+    "LAMBDA_SYNCHRONOUS_CREATE",
     "LEGACY_DIRECTORIES",
     "LEGACY_DOCKER_CLIENT",
     "LEGACY_EDGE_PROXY",
@@ -806,6 +831,7 @@ CONFIG_ENV_VARS = [
     "OUTBOUND_HTTP_PROXY",
     "OUTBOUND_HTTPS_PROXY",
     "PERSISTENCE",
+    "PORTS_CHECK_DOCKER_IMAGE",
     "REQUESTS_CA_BUNDLE",
     "S3_SKIP_SIGNATURE_VALIDATION",
     "S3_SKIP_KMS_KEY_VALIDATION",
@@ -1085,7 +1111,6 @@ def init_directories() -> Directories:
 
         # deprecation path
         DATA_DIR = dirs.data
-        os.environ["DATA_DIR"] = dirs.data  # still needed for external tools
 
     return dirs
 

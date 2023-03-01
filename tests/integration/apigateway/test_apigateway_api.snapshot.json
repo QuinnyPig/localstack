@@ -1,4 +1,301 @@
 {
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_list_and_delete_apis": {
+    "recorded-date": "01-02-2023, 20:16:52",
+    "recorded-content": {
+      "create-rest-api-1": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-rest-api-2": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "description": "this is my api2",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:2>",
+        "name": "<name:2>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-rest-api-before-delete": {
+        "items": [
+          {
+            "apiKeySource": "HEADER",
+            "createdDate": "datetime",
+            "description": "this is my api",
+            "disableExecuteApiEndpoint": false,
+            "endpointConfiguration": {
+              "types": [
+                "EDGE"
+              ]
+            },
+            "id": "<id:1>",
+            "name": "<name:1>"
+          },
+          {
+            "apiKeySource": "HEADER",
+            "createdDate": "datetime",
+            "description": "this is my api2",
+            "disableExecuteApiEndpoint": false,
+            "endpointConfiguration": {
+              "types": [
+                "EDGE"
+              ]
+            },
+            "id": "<id:2>",
+            "name": "<name:2>"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "delete-rest-api": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 202
+        }
+      },
+      "get-rest-api-after-delete": {
+        "items": [
+          {
+            "apiKeySource": "HEADER",
+            "createdDate": "datetime",
+            "description": "this is my api2",
+            "disableExecuteApiEndpoint": false,
+            "endpointConfiguration": {
+              "types": [
+                "EDGE"
+              ]
+            },
+            "id": "<id:2>",
+            "name": "<name:2>"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_create_rest_api_with_tags": {
+    "recorded-date": "01-02-2023, 20:11:19",
+    "recorded-content": {
+      "create-rest-api-w-tags": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {
+          "MY_TAG1": "MY_VALUE1"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "get-rest-api-w-tags": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {
+          "MY_TAG1": "MY_VALUE1"
+        },
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-rest-apis-w-tags": {
+        "items": [
+          {
+            "apiKeySource": "HEADER",
+            "createdDate": "datetime",
+            "description": "this is my api",
+            "disableExecuteApiEndpoint": false,
+            "endpointConfiguration": {
+              "types": [
+                "EDGE"
+              ]
+            },
+            "id": "<id:1>",
+            "name": "<name:1>",
+            "tags": {
+              "MY_TAG1": "MY_VALUE1"
+            }
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_update_rest_api_operation_add_remove": {
+    "recorded-date": "01-02-2023, 20:11:40",
+    "recorded-content": {
+      "update-rest-api-add": {
+        "apiKeySource": "HEADER",
+        "binaryMediaTypes": [
+          "image/png",
+          "image/jpeg"
+        ],
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-rest-api-replace": {
+        "apiKeySource": "HEADER",
+        "binaryMediaTypes": [
+          "image/jpeg",
+          "image/gif"
+        ],
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-rest-api-remove": {
+        "apiKeySource": "HEADER",
+        "binaryMediaTypes": [
+          "image/jpeg"
+        ],
+        "createdDate": "datetime",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_update_rest_api_behaviour": {
+    "recorded-date": "01-02-2023, 20:27:17",
+    "recorded-content": {
+      "update-rest-api-array": {
+        "apiKeySource": "HEADER",
+        "binaryMediaTypes": [
+          "-"
+        ],
+        "createdDate": "datetime",
+        "description": "this is my api",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "tags": {},
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-rest-api-add-base-path": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path /binaryMediaTypes"
+        },
+        "message": "Invalid patch path /binaryMediaTypes",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "update-rest-api-replace-base-path": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path /binaryMediaTypes"
+        },
+        "message": "Invalid patch path /binaryMediaTypes",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "update-rest-api-remove-base-path": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path /binaryMediaTypes"
+        },
+        "message": "Invalid patch path /binaryMediaTypes",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
   "tests/integration/apigateway/test_apigateway_api.py::test_import_rest_api": {
     "recorded-date": "10-01-2023, 20:08:25",
     "recorded-content": {
@@ -20,6 +317,379 @@
         "ResponseMetadata": {
           "HTTPHeaders": {},
           "HTTPStatusCode": 201
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_update_rest_api_invalid_api_id": {
+    "recorded-date": "01-02-2023, 22:26:45",
+    "recorded-content": {
+      "not-found-update-rest-api": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid API identifier specified 111111111111:api_id"
+        },
+        "message": "Invalid API identifier specified 111111111111:api_id",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_create_rest_api_with_optional_params": {
+    "recorded-date": "01-02-2023, 23:48:05",
+    "recorded-content": {
+      "create-only-name": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:1>",
+        "name": "<name:1>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-empty-desc": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Description cannot be an empty string"
+        },
+        "message": "Description cannot be an empty string",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "create-with-version": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:2>",
+        "name": "<name:2>",
+        "version": "v1",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-with-empty-binary-media": {
+        "apiKeySource": "HEADER",
+        "createdDate": "datetime",
+        "disableExecuteApiEndpoint": false,
+        "endpointConfiguration": {
+          "types": [
+            "EDGE"
+          ]
+        },
+        "id": "<id:3>",
+        "name": "<name:3>",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_resource_lifecycle": {
+    "recorded-date": "23-02-2023, 22:08:31",
+    "recorded-content": {
+      "rest-api-root-resource": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "path": "/"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-resource": {
+        "id": "<id:2>",
+        "parentId": "<id:1>",
+        "path": "/pets",
+        "pathPart": "pets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "rest-api-resources-after-create": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "path": "/"
+          },
+          {
+            "id": "<id:2>",
+            "parentId": "<id:1>",
+            "path": "/pets",
+            "pathPart": "pets"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "create-subresource": {
+        "id": "<id:3>",
+        "parentId": "<id:2>",
+        "path": "/pets/subpets",
+        "pathPart": "subpets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "rest-api-resources-after-create-sub": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "path": "/"
+          },
+          {
+            "id": "<id:2>",
+            "parentId": "<id:1>",
+            "path": "/pets",
+            "pathPart": "pets"
+          },
+          {
+            "id": "<id:3>",
+            "parentId": "<id:2>",
+            "path": "/pets/subpets",
+            "pathPart": "subpets"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-path-part": {
+        "id": "<id:2>",
+        "parentId": "<id:1>",
+        "path": "/dogs",
+        "pathPart": "dogs",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "get-resp-after-update-path-part": {
+        "id": "<id:2>",
+        "parentId": "<id:1>",
+        "path": "/dogs",
+        "pathPart": "dogs",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "del-resource": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 202
+        }
+      },
+      "rest-api-resources-after-delete": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "path": "/"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_update_resource_behaviour": {
+    "recorded-date": "24-02-2023, 17:56:07",
+    "recorded-content": {
+      "nonexistent-resource": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid Resource identifier specified"
+        },
+        "message": "Invalid Resource identifier specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "invalid-path-part": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path  '/invalid' specified for op 'replace'. Must be one of: [/parentId, /pathPart]"
+        },
+        "message": "Invalid patch path  '/invalid' specified for op 'replace'. Must be one of: [/parentId, /pathPart]",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "invalid-parent-id": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid Resource identifier specified"
+        },
+        "message": "Invalid Resource identifier specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
+        }
+      },
+      "create-subresource": {
+        "id": "<id:1>",
+        "parentId": "<parent-id:1>",
+        "path": "/pets/subpets",
+        "pathPart": "subpets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "create-subresource-child": {
+        "id": "<id:2>",
+        "parentId": "<id:1>",
+        "path": "/pets/subpets/pets",
+        "pathPart": "pets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 201
+        }
+      },
+      "existing-future-sibling-path": {
+        "Error": {
+          "Code": "ConflictException",
+          "Message": "Another resource with the same parent already has this name: pets"
+        },
+        "message": "Another resource with the same parent already has this name: pets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 409
+        }
+      },
+      "update-parent-id-to-subresource-id": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Resources cannot be cyclical."
+        },
+        "message": "Resources cannot be cyclical.",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "update-parent-id-to-root-id": {
+        "id": "<id:1>",
+        "parentId": "<id:3>",
+        "path": "/subpets",
+        "pathPart": "subpets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "update-path-already-exists": {
+        "Error": {
+          "Code": "ConflictException",
+          "Message": "Another resource with the same parent already has this name: pets"
+        },
+        "message": "Another resource with the same parent already has this name: pets",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 409
+        }
+      },
+      "resources-after-deletion": {
+        "items": [
+          {
+            "id": "<id:3>",
+            "path": "/"
+          },
+          {
+            "id": "<id:1>",
+            "parentId": "<id:3>",
+            "path": "/subpets",
+            "pathPart": "subpets"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "remove-unsupported": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path  '/pathPart' specified for op 'remove'. Please choose supported operations"
+        },
+        "message": "Invalid patch path  '/pathPart' specified for op 'remove'. Please choose supported operations",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      },
+      "add-unsupported": {
+        "Error": {
+          "Code": "BadRequestException",
+          "Message": "Invalid patch path  '/pathPart' specified for op 'add'. Please choose supported operations"
+        },
+        "message": "Invalid patch path  '/pathPart' specified for op 'add'. Please choose supported operations",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 400
+        }
+      }
+    }
+  },
+  "tests/integration/apigateway/test_apigateway_api.py::TestApiGatewayApi::test_delete_resource": {
+    "recorded-date": "23-02-2023, 20:41:28",
+    "recorded-content": {
+      "delete-resource": {
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 202
+        }
+      },
+      "get-resources": {
+        "items": [
+          {
+            "id": "<id:1>",
+            "path": "/"
+          }
+        ],
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 200
+        }
+      },
+      "delete-subresource": {
+        "Error": {
+          "Code": "NotFoundException",
+          "Message": "Invalid Resource identifier specified"
+        },
+        "message": "Invalid Resource identifier specified",
+        "ResponseMetadata": {
+          "HTTPHeaders": {},
+          "HTTPStatusCode": 404
         }
       }
     }

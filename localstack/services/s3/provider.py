@@ -54,7 +54,8 @@ from localstack.aws.api.s3 import (
     HeadObjectRequest,
     InvalidBucketName,
     InvalidPartOrder,
-    ListObjectsOutput,
+    InvalidStorageClass,
+    ListBucketResult,
     ListObjectsRequest,
     ListObjectsV2Output,
     ListObjectsV2Request,
@@ -109,11 +110,13 @@ from localstack.services.s3.utils import (
     ALLOWED_HEADER_OVERRIDES,
     VALID_ACL_PREDEFINED_GROUPS,
     VALID_GRANTEE_PERMISSIONS,
+    VALID_STORAGE_CLASSES,
     _create_invalid_argument_exc,
     capitalize_header_name_from_snake_case,
     get_bucket_from_moto,
     get_header_name,
     get_key_from_moto_bucket,
+    get_object_checksum_for_algorithm,
     is_bucket_name_valid,
     is_canned_acl_bucket_valid,
     is_key_expired,
@@ -252,7 +255,24 @@ class S3Provider(S3Api, ServiceLifecycleHook):
     def get_bucket_location(
         self, context: RequestContext, bucket: BucketName, expected_bucket_owner: AccountId = None
     ) -> GetBucketLocationOutput:
+        """
+        When implementing the ASF provider, this operation is implemented because:
+        - The spec defines a root element GetBucketLocationOutput containing a LocationConstraint member, where
+          S3 actually just returns the LocationConstraint on the root level (only operation so far that we know of).
+        - We circumvent the root level element here by patching the spec such that this operation returns a
+          single "payload" (the XML body response), which causes the serializer to directly take the payload element.
+        - The above "hack" causes the fix in the serializer to not be picked up here as we're passing the XML body as
+          the payload, which is why we need to manually do this here by manipulating the string.
+        Botocore implements this hack for parsing the response in `botocore.handlers.py#parse_get_bucket_location`
+        """
         response = call_moto(context)
+
+        location_constraint_xml = response["LocationConstraint"]
+        xml_root_end = location_constraint_xml.find(">") + 1
+        location_constraint_xml = (
+            f"{location_constraint_xml[:xml_root_end]}\n{location_constraint_xml[xml_root_end:]}"
+        )
+        response["LocationConstraint"] = location_constraint_xml[:]
         return response
 
     @handler("ListObjects", expand=False)
@@ -260,8 +280,8 @@ class S3Provider(S3Api, ServiceLifecycleHook):
         self,
         context: RequestContext,
         request: ListObjectsRequest,
-    ) -> ListObjectsOutput:
-        response: ListObjectsOutput = call_moto(context)
+    ) -> ListBucketResult:
+        response: ListBucketResult = call_moto(context)
 
         if "Marker" not in response:
             response["Marker"] = request.get("Marker") or ""
@@ -281,7 +301,7 @@ class S3Provider(S3Api, ServiceLifecycleHook):
             bucket = get_bucket_from_moto(moto_backend, bucket=request["Bucket"])
             response["BucketRegion"] = bucket.region_name
 
-        return ListObjectsOutput(**response)
+        return ListBucketResult(**response)
 
     @handler("ListObjectsV2", expand=False)
     def list_objects_v2(
@@ -339,6 +359,23 @@ class S3Provider(S3Api, ServiceLifecycleHook):
             if request_param_value := request.get(request_param):  # noqa
                 response[response_param] = request_param_value  # noqa
 
+        moto_backend = get_moto_s3_backend(context)
+        moto_bucket = get_bucket_from_moto(moto_backend, bucket=bucket)
+        key_object = get_key_from_moto_bucket(moto_bucket, key=key)
+
+        if checksum_algorithm := key_object.checksum_algorithm:
+            # this is a bug in AWS: it sets the content encoding header to an empty string (parity tested)
+            response["ContentEncoding"] = ""
+
+        if request.get("ChecksumMode") == "ENABLED" and checksum_algorithm:
+            # TODO: moto does not store the checksum of object, there is a TODO there as well
+            # in the meantime, just compute the hash everytime it's requested
+            checksum = get_object_checksum_for_algorithm(
+                checksum_algorithm=checksum_algorithm,
+                data=key_object.value,
+            )
+            response[f"Checksum{checksum_algorithm.upper()}"] = checksum  # noqa
+
         response["AcceptRanges"] = "bytes"
         return response
 
@@ -357,7 +394,16 @@ class S3Provider(S3Api, ServiceLifecycleHook):
         if not config.S3_SKIP_KMS_KEY_VALIDATION and (sse_kms_key_id := request.get("SSEKMSKeyId")):
             validate_kms_key_id(sse_kms_key_id, bucket)
 
-        response: PutObjectOutput = call_moto(context)
+        try:
+            response: PutObjectOutput = call_moto(context)
+        except CommonServiceException as e:
+            # missing attributes in exception
+            if e.code == "InvalidStorageClass":
+                raise InvalidStorageClass(
+                    "The storage class you specified is not valid",
+                    StorageClassRequested=request.get("StorageClass"),
+                )
+            raise
 
         # moto interprets the Expires in query string for presigned URL as an Expires header and use it for the object
         # we set it to the correctly parsed value in Request, else we remove it from moto metadata
@@ -451,6 +497,14 @@ class S3Provider(S3Api, ServiceLifecycleHook):
             bucket = get_bucket_from_moto(moto_backend, bucket=request["Bucket"])
             validate_kms_key_id(sse_kms_key_id, bucket)
 
+        if (
+            storage_class := request.get("StorageClass")
+        ) and storage_class not in VALID_STORAGE_CLASSES:
+            raise InvalidStorageClass(
+                "The storage class you specified is not valid",
+                StorageClassRequested=storage_class,
+            )
+
         response: CreateMultipartUploadOutput = call_moto(context)
         return response
 
@@ -468,6 +522,7 @@ class S3Provider(S3Api, ServiceLifecycleHook):
             )
 
         response: CompleteMultipartUploadOutput = call_moto(context)
+
         # moto return the Location in AWS `http://{bucket}.s3.amazonaws.com/{key}`
         response[
             "Location"
@@ -956,6 +1011,14 @@ class S3Provider(S3Api, ServiceLifecycleHook):
             response["StorageClass"] = key.storage_class
         if "ObjectSize" in object_attrs:
             response["ObjectSize"] = key.size
+        if "Checksum" in object_attrs and (checksum_algorithm := key.checksum_algorithm):
+            # TODO: moto does not store the checksum of object, there is a TODO there as well
+            # in the meantime, just compute the hash everytime it's requested
+            checksum = get_object_checksum_for_algorithm(
+                checksum_algorithm=checksum_algorithm,
+                data=key.value,
+            )
+            response["Checksum"] = {f"Checksum{checksum_algorithm.upper()}": checksum}  # noqa
 
         response["LastModified"] = key.last_modified
         if version_id := request.get("VersionId"):
@@ -1170,9 +1233,14 @@ def _create_redirect_for_post_request(
 def apply_moto_patches():
     # importing here in case we need InvalidObjectState from `localstack.aws.api.s3`
     from moto.s3.exceptions import InvalidObjectState
+    from moto.s3.models import STORAGE_CLASS
 
     if not os.environ.get("MOTO_S3_DEFAULT_KEY_BUFFER_SIZE"):
         os.environ["MOTO_S3_DEFAULT_KEY_BUFFER_SIZE"] = str(S3_MAX_FILE_SIZE_BYTES)
+
+    # TODO: fix upstream
+    STORAGE_CLASS.clear()
+    STORAGE_CLASS.extend(VALID_STORAGE_CLASSES)
 
     @patch(moto_s3_responses.S3Response.key_response)
     def _fix_key_response(fn, self, *args, **kwargs):

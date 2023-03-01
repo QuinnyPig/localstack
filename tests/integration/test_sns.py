@@ -241,6 +241,7 @@ class TestSNSProvider:
         snapshot.match("messages-response", response)
 
     @pytest.mark.aws_validated
+    @pytest.mark.skip_snapshot_verify(paths=["$..Attributes.SubscriptionPrincipal"])
     def test_filter_policy(
         self,
         sns_client,
@@ -308,6 +309,7 @@ class TestSNSProvider:
         assert num_msgs_2 == num_msgs_1
 
     @pytest.mark.aws_validated
+    @pytest.mark.skip_snapshot_verify(paths=["$..Attributes.SubscriptionPrincipal"])
     def test_exists_filter_policy(
         self,
         sns_client,
@@ -432,6 +434,7 @@ class TestSNSProvider:
         assert num_msgs_4 == num_msgs_3
 
     @pytest.mark.aws_validated
+    @pytest.mark.skip_snapshot_verify(paths=["$..Attributes.SubscriptionPrincipal"])
     def test_subscribe_sqs_queue(
         self,
         sns_client,
@@ -1812,14 +1815,7 @@ class TestSNSProvider:
         # todo check both ContentBasedDeduplication and MessageDeduplicationId when implemented
         # https://docs.aws.amazon.com/sns/latest/dg/fifo-message-dedup.html
 
-        subscription = sns_create_sqs_subscription(topic_arn=topic_arn, queue_url=queue_url)
-
-        # this allows us to have a simplified body not containing timestamp, so we can check MessageDeduplicationId
-        sns_client.set_subscription_attributes(
-            SubscriptionArn=subscription["SubscriptionArn"],
-            AttributeName="RawMessageDelivery",
-            AttributeValue="true",
-        )
+        sns_create_sqs_subscription(topic_arn=topic_arn, queue_url=queue_url)
 
         message = "Test"
         if content_based_deduplication:
@@ -3191,3 +3187,193 @@ class TestSNSProvider:
         )
         # assert there are no messages in the queue
         assert "Messages" not in response
+
+    @pytest.mark.aws_validated
+    @pytest.mark.parametrize("raw_message_delivery", [True, False])
+    @pytest.mark.skip_snapshot_verify(
+        paths=[
+            "$..Messages..Body.SignatureVersion",  # TODO: apparently, messages are not signed in fifo topics
+            "$..Messages..Body.Signature",
+            "$..Messages..Body.SigningCertURL",
+            "$..Messages..Body.SequenceNumber",
+        ]
+    )
+    def test_publish_to_fifo_topic_to_sqs_queue_no_content_dedup(
+        self,
+        sns_client,
+        sqs_client,
+        sns_create_topic,
+        sqs_create_queue,
+        sns_create_sqs_subscription,
+        snapshot,
+        raw_message_delivery,
+    ):
+        topic_name = f"topic-{short_uid()}.fifo"
+        queue_name = f"queue-{short_uid()}.fifo"
+        topic_attributes = {"FifoTopic": "true", "ContentBasedDeduplication": "true"}
+        queue_attributes = {"FifoQueue": "true"}
+
+        topic_arn = sns_create_topic(
+            Name=topic_name,
+            Attributes=topic_attributes,
+        )["TopicArn"]
+        queue_url = sqs_create_queue(
+            QueueName=queue_name,
+            Attributes=queue_attributes,
+        )
+
+        subscription = sns_create_sqs_subscription(topic_arn=topic_arn, queue_url=queue_url)
+
+        if raw_message_delivery:
+            sns_client.set_subscription_attributes(
+                SubscriptionArn=subscription["SubscriptionArn"],
+                AttributeName="RawMessageDelivery",
+                AttributeValue="true",
+            )
+
+        # Topic has ContentBasedDeduplication set to true, the queue should receive only one message
+        # SNS will create a MessageDeduplicationId for the SQS queue, as it does not have ContentBasedDeduplication
+        message = "Test"
+        sns_client.publish(TopicArn=topic_arn, Message=message, MessageGroupId="message-group-id-1")
+        sns_client.publish(TopicArn=topic_arn, Message=message, MessageGroupId="message-group-id-1")
+
+        response = sqs_client.receive_message(
+            QueueUrl=queue_url,
+            VisibilityTimeout=0,
+            WaitTimeSeconds=10,
+            AttributeNames=["All"],
+        )
+        snapshot.match("messages", response)
+
+    @pytest.mark.aws_validated
+    def test_publish_to_fifo_with_target_arn(self, sns_client, sns_create_topic):
+        topic_name = f"topic-{short_uid()}.fifo"
+        topic_attributes = {
+            "FifoTopic": "true",
+            "ContentBasedDeduplication": "true",
+        }
+
+        topic_arn = sns_create_topic(
+            Name=topic_name,
+            Attributes=topic_attributes,
+        )["TopicArn"]
+
+        message = {"foo": "bar"}
+        response = sns_client.publish(
+            TargetArn=topic_arn,
+            Message=json.dumps({"default": json.dumps(message)}),
+            MessageStructure="json",
+            MessageGroupId="123",
+        )
+        assert "MessageId" in response
+
+    @pytest.mark.aws_validated
+    @pytest.mark.skip_snapshot_verify(paths=["$..Attributes.SubscriptionPrincipal"])
+    def test_filter_policy_for_batch(
+        self,
+        sns_client,
+        sqs_client,
+        sqs_create_queue,
+        sns_create_topic,
+        sns_create_sqs_subscription,
+        snapshot,
+    ):
+
+        topic_arn = sns_create_topic()["TopicArn"]
+        queue_url_with_filter = sqs_create_queue()
+        subscription_with_filter = sns_create_sqs_subscription(
+            topic_arn=topic_arn, queue_url=queue_url_with_filter
+        )
+        subscription_with_filter_arn = subscription_with_filter["SubscriptionArn"]
+
+        queue_url_no_filter = sqs_create_queue()
+        subscription_no_filter = sns_create_sqs_subscription(
+            topic_arn=topic_arn, queue_url=queue_url_no_filter
+        )
+        subscription_no_filter_arn = subscription_no_filter["SubscriptionArn"]
+
+        filter_policy = {"attr1": [{"numeric": [">", 0, "<=", 100]}]}
+        sns_client.set_subscription_attributes(
+            SubscriptionArn=subscription_with_filter_arn,
+            AttributeName="FilterPolicy",
+            AttributeValue=json.dumps(filter_policy),
+        )
+
+        response_attributes = sns_client.get_subscription_attributes(
+            SubscriptionArn=subscription_with_filter_arn
+        )
+        snapshot.match("subscription-attributes-with-filter", response_attributes)
+
+        response_attributes = sns_client.get_subscription_attributes(
+            SubscriptionArn=subscription_no_filter_arn
+        )
+        snapshot.match("subscription-attributes-no-filter", response_attributes)
+
+        sqs_wait_time = 4 if is_aws_cloud() else 1
+
+        response_before_publish_no_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_with_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        snapshot.match("messages-no-filter-before-publish", response_before_publish_no_filter)
+
+        response_before_publish_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_with_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        snapshot.match("messages-with-filter-before-publish", response_before_publish_filter)
+
+        # publish message that satisfies the filter policy, assert that message is received
+        message = "This is a test message"
+        message_attributes = {"attr1": {"DataType": "Number", "StringValue": "99"}}
+        sns_client.publish_batch(
+            TopicArn=topic_arn,
+            PublishBatchRequestEntries=[
+                {
+                    "Id": "1",
+                    "Message": message,
+                    "MessageAttributes": message_attributes,
+                }
+            ],
+        )
+
+        response_after_publish_no_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_no_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        snapshot.match("messages-no-filter-after-publish-ok", response_after_publish_no_filter)
+        sqs_client.delete_message(
+            QueueUrl=queue_url_no_filter,
+            ReceiptHandle=response_after_publish_no_filter["Messages"][0]["ReceiptHandle"],
+        )
+
+        response_after_publish_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_with_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        snapshot.match("messages-with-filter-after-publish-ok", response_after_publish_filter)
+        sqs_client.delete_message(
+            QueueUrl=queue_url_with_filter,
+            ReceiptHandle=response_after_publish_filter["Messages"][0]["ReceiptHandle"],
+        )
+
+        # publish message that does not satisfy the filter policy, assert that message is not received by the
+        # subscription with the filter and received by the other
+        sns_client.publish_batch(
+            TopicArn=topic_arn,
+            PublishBatchRequestEntries=[
+                {
+                    "Id": "1",
+                    "Message": "This is another test message",
+                    "MessageAttributes": {"attr1": {"DataType": "Number", "StringValue": "111"}},
+                }
+            ],
+        )
+
+        response_after_publish_no_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_no_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        # there should be 1 message in the queue, latest sent
+        snapshot.match("messages-no-filter-after-publish-ok-1", response_after_publish_no_filter)
+
+        response_after_publish_filter = sqs_client.receive_message(
+            QueueUrl=queue_url_with_filter, VisibilityTimeout=0, WaitTimeSeconds=sqs_wait_time
+        )
+        # there should be no messages in this queue
+        snapshot.match("messages-with-filter-after-publish-filtered", response_after_publish_filter)

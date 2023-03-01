@@ -17,7 +17,7 @@ from localstack.constants import ENV_INTERNAL_TEST_RUN
 from localstack.runtime import events
 from localstack.services import infra
 from localstack.utils.common import safe_requests
-from tests.integration.apigateway_fixtures import create_rest_api, delete_rest_api, import_rest_api
+from tests.integration.apigateway_fixtures import delete_rest_api, import_rest_api
 from tests.integration.test_es import install_async as es_install_async
 from tests.integration.test_opensearch import install_async as opensearch_install_async
 from tests.integration.test_terraform import TestTerraform
@@ -98,7 +98,7 @@ def _trigger_stop():
 def startup_monitor() -> None:
     """
     The startup monitor is a thread that waits for the startup_monitor_event and, once the event is true, starts a
-    localstack instance in it's own thread context.
+    localstack instance in its own thread context.
     """
     logger.info("waiting on localstack_start signal")
     startup_monitor_event.wait()
@@ -177,21 +177,6 @@ def localstack_runtime():
     localstack_started.wait()
     yield
     return
-
-
-@pytest.fixture
-def create_rest_apigw(apigateway_client):
-    rest_api_ids = []
-
-    def _create_apigateway_function(*args, **kwargs):
-        api_id, name, root_id = create_rest_api(apigateway_client, **kwargs)
-        rest_api_ids.append(api_id)
-        return api_id, name, root_id
-
-    yield _create_apigateway_function
-
-    for rest_api_id in rest_api_ids:
-        delete_rest_api(apigateway_client, restApiId=rest_api_id)
 
 
 @pytest.fixture

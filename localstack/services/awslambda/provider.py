@@ -9,6 +9,7 @@ import time
 from typing import IO
 
 from localstack import config
+from localstack.aws.accounts import get_aws_account_id
 from localstack.aws.api import RequestContext, handler
 from localstack.aws.api.lambda_ import (
     AccountLimit,
@@ -130,9 +131,11 @@ from localstack.aws.api.lambda_ import (
 )
 from localstack.constants import LOCALHOST_HOSTNAME
 from localstack.services.awslambda import api_utils
+from localstack.services.awslambda import hooks as lambda_hooks
 from localstack.services.awslambda.event_source_listeners.event_source_listener import (
     EventSourceListener,
 )
+from localstack.services.awslambda.invocation import AccessDeniedException
 from localstack.services.awslambda.invocation.lambda_models import (
     IMAGE_MAPPING,
     LAMBDA_LIMITS_CREATE_FUNCTION_REQUEST_SIZE,
@@ -173,13 +176,16 @@ from localstack.services.awslambda.invocation.lambda_service import (
 )
 from localstack.services.awslambda.invocation.models import LambdaStore
 from localstack.services.awslambda.lambda_utils import validate_filters
+from localstack.services.awslambda.layerfetcher.layer_fetcher import LayerFetcher
 from localstack.services.awslambda.urlrouter import FunctionUrlRouter
 from localstack.services.edge import ROUTER
 from localstack.services.plugins import ServiceLifecycleHook
 from localstack.utils.aws import aws_stack
+from localstack.utils.aws.arns import extract_service_from_arn
 from localstack.utils.collections import PaginatedList
 from localstack.utils.files import load_file
 from localstack.utils.strings import get_random_hex, long_uid, short_uid, to_bytes, to_str
+from localstack.utils.sync import poll_condition
 
 LOG = logging.getLogger(__name__)
 
@@ -187,6 +193,7 @@ LAMBDA_DEFAULT_TIMEOUT = 3
 LAMBDA_DEFAULT_MEMORY_SIZE = 128
 
 LAMBDA_TAG_LIMIT_PER_RESOURCE = 50
+LAMBDA_LAYERS_LIMIT_PER_FUNCTION = 5
 
 
 class LambdaProvider(LambdaApi, ServiceLifecycleHook):
@@ -194,12 +201,15 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
     create_fn_lock: threading.RLock
     create_layer_lock: threading.RLock
     router: FunctionUrlRouter
+    layer_fetcher: LayerFetcher | None
 
     def __init__(self) -> None:
         self.lambda_service = LambdaService()
         self.create_fn_lock = threading.RLock()
         self.create_layer_lock = threading.RLock()
         self.router = FunctionUrlRouter(ROUTER, self.lambda_service)
+        self.layer_fetcher = None
+        lambda_hooks.inject_layer_fetcher.run(self)
 
     def on_after_init(self):
         self.router.register_routes()
@@ -453,12 +463,15 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
                 Type="User",
             )
 
-    @staticmethod
-    def _validate_layers(new_layers: list[str]):
-        visited_layers = dict()
+    def _validate_layers(self, new_layers: list[str], region: str, account_id: int):
+        if len(new_layers) > LAMBDA_LAYERS_LIMIT_PER_FUNCTION:
+            raise InvalidParameterValueException(
+                "Cannot reference more than 5 layers.", Type="User"
+            )
 
+        visited_layers = dict()
         for layer_version_arn in new_layers:
-            region_name, account_id, layer_name, layer_version = api_utils.parse_layer_arn(
+            layer_region, layer_account_id, layer_name, layer_version = api_utils.parse_layer_arn(
                 layer_version_arn
             )
             if layer_version is None:
@@ -467,16 +480,43 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
                     + r" at 'layers' failed to satisfy constraint: Member must satisfy constraint: [Member must have length less than or equal to 140, Member must have length greater than or equal to 1, Member must satisfy regular expression pattern: (arn:[a-zA-Z0-9-]+:lambda:[a-zA-Z0-9-]+:\d{12}:layer:[a-zA-Z0-9-_]+:[0-9]+)|(arn:[a-zA-Z0-9-]+:lambda:::awslayer:[a-zA-Z0-9-_]+), Member must not be null]",
                 )
 
-            layer = lambda_stores[account_id][region_name].layers.get(layer_name)
-            if layer is None:
-                raise InvalidParameterValueException(
-                    f"Layer version {layer_version_arn} does not exist.", Type="User"
-                )
-            layer_version = layer.layer_versions.get(layer_version)
-            if layer_version is None:
-                raise InvalidParameterValueException(
-                    f"Layer version {layer_version_arn} does not exist.", Type="User"
-                )
+            state = lambda_stores[layer_account_id][layer_region]
+            layer = state.layers.get(layer_name)
+            if layer_account_id == get_aws_account_id():
+                if region and layer_region != region:
+                    raise InvalidParameterValueException(
+                        f"Layers are not in the same region as the function. "
+                        f"Layers are expected to be in region {region}.",
+                        Type="User",
+                    )
+                if layer is None or layer.layer_versions.get(layer_version) is None:
+                    raise InvalidParameterValueException(
+                        f"Layer version {layer_version_arn} does not exist.", Type="User"
+                    )
+            else:  # External layer from other account
+                # TODO: validate IAM layer policy here, allowing access by default for now and only checking region
+                if region and layer_region != region:
+                    # TODO: detect user or role from context when IAM users are implemented
+                    user = "user/localstack-testing"
+                    raise AccessDeniedException(
+                        f"User: arn:aws:iam::{account_id}:{user} is not authorized to perform: lambda:GetLayerVersion on resource: {layer_version_arn} because no resource-based policy allows the lambda:GetLayerVersion action"
+                    )
+                if layer is None:
+                    # Limitation: cannot fetch external layers when using the same account id as the target layer
+                    # because we do not want to trigger the layer fetcher for every non-existing layer.
+                    if self.layer_fetcher is None:
+                        raise NotImplementedError(
+                            "Fetching shared layers from AWS is a pro feature."
+                        )
+
+                    layer = self.layer_fetcher.fetch_layer(layer_version_arn)
+                    if layer is None:
+                        # TODO: detect user or role from context when IAM users are implemented
+                        user = "user/localstack-testing"
+                        raise AccessDeniedException(
+                            f"User: arn:aws:iam::{account_id}:{user} is not authorized to perform: lambda:GetLayerVersion on resource: {layer_version_arn} because no resource-based policy allows the lambda:GetLayerVersion action"
+                        )
+                    state.layers[layer_name] = layer
 
             # only the first two matches in the array are considered for the error message
             layer_arn = ":".join(layer_version_arn.split(":")[:-1])
@@ -512,14 +552,24 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
             )
 
         architectures = request.get("Architectures")
-        if architectures and Architecture.arm64 in architectures:
-            raise ServiceException("ARM64 is currently not supported by this provider")
+        if architectures:
+            if len(architectures) != 1:
+                raise ValidationException(
+                    f"1 validation error detected: Value '[{', '.join(architectures)}]' at 'architectures' failed to "
+                    f"satisfy constraint: Member must have length less than or equal to 1",
+                )
+            if architectures[0] not in [Architecture.x86_64, Architecture.arm64]:
+                raise ValidationException(
+                    f"1 validation error detected: Value '[{', '.join(architectures)}]' at 'architectures' failed to "
+                    f"satisfy constraint: Member must satisfy constraint: [Member must satisfy enum value set: "
+                    f"[x86_64, arm64], Member must not be null]",
+                )
 
         if env_vars := request.get("Environment", {}).get("Variables"):
             self._verify_env_variables(env_vars)
 
         if layers := request.get("Layers", []):
-            self._validate_layers(layers)
+            self._validate_layers(layers, region=context.region, account_id=context.account_id)
 
         if not api_utils.is_role_arn(request.get("Role")):
             raise ValidationException(
@@ -529,7 +579,7 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
         package_type = request.get("PackageType", PackageType.Zip)
         if package_type == PackageType.Zip and request.get("Runtime") not in IMAGE_MAPPING:
             raise InvalidParameterValueException(
-                f"Value {request.get('Runtime')} at 'runtime' failed to satisfy constraint: Member must satisfy enum value set: [nodejs12.x, provided, nodejs16.x, nodejs14.x, ruby2.7, java11, dotnet6, go1.x, provided.al2, java8, java8.al2, dotnetcore3.1, python3.7, python3.8, python3.9] or be a valid ARN",
+                f"Value {request.get('Runtime')} at 'runtime' failed to satisfy constraint: Member must satisfy enum value set: [nodejs12.x, provided, nodejs16.x, nodejs14.x, ruby2.7, java11, dotnet6, go1.x, nodejs18.x, provided.al2, java8, java8.al2, dotnetcore3.1, python3.7, python3.8, python3.9] or be a valid ARN",
                 Type="User",
             )
         state = lambda_stores[context.account_id][context.region]
@@ -598,7 +648,7 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
                     package_type=package_type,
                     reserved_concurrent_executions=0,
                     environment=env_vars,
-                    architectures=request.get("Architectures") or ["x86_64"],  # TODO
+                    architectures=request.get("Architectures") or [Architecture.x86_64],
                     tracing_config_mode=TracingMode.PassThrough,  # TODO
                     image=image,
                     image_config=image_config,
@@ -627,6 +677,20 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
             version = self._publish_version_with_changes(
                 function_name=function_name, region=context.region, account_id=context.account_id
             )
+
+        if config.LAMBDA_SYNCHRONOUS_CREATE:
+            # block via retrying until "terminal" condition reached before returning
+            if not poll_condition(
+                lambda: self._get_function_version(
+                    function_name, version.id.qualifier, version.id.account, version.id.region
+                ).config.state.state
+                in [State.Active, State.Failed],
+                timeout=10,
+            ):
+                LOG.warning(
+                    "LAMBDA_SYNCHRONOUS_CREATE is active, but waiting for %s reached timeout.",
+                    function_name,
+                )
 
         return api_utils.map_config_out(
             version, return_qualified_arn=False, return_update_status=False
@@ -702,7 +766,9 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
         if "Layers" in request:
             new_layers = request["Layers"]
             if new_layers:
-                self._validate_layers(new_layers)
+                self._validate_layers(
+                    new_layers, region=context.region, account_id=context.account_id
+                )
             replace_kwargs["layers"] = self.map_layers(new_layers)
 
         if "ImageConfig" in request:
@@ -1281,6 +1347,13 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
         if "EventSourceArn" not in request:
             raise InvalidParameterValueException("Unrecognized event source.", Type="User")
 
+        service = extract_service_from_arn(request.get("EventSourceArn"))
+        if service in ["dynamodb", "kinesis", "kafka"] and "StartingPosition" not in request:
+            raise InvalidParameterValueException(
+                "1 validation error detected: Value null at 'startingPosition' failed to satisfy constraint: Member must not be null.",
+                Type="User",
+            )
+
         state = lambda_stores[context.account_id][context.region]
         function_name = request["FunctionName"]
 
@@ -1756,13 +1829,13 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
         # TODO: re-evaluate data model to prevent this dirty hack just for bumping the revision id
         # TODO: does that need a `with function.lock` for atomic updates of the policy + revision_id?
         if api_utils.qualifier_is_alias(resolved_qualifier):
-            latest_alias = resolved_fn.aliases[resolved_qualifier]
-            resolved_fn.aliases[resolved_qualifier] = dataclasses.replace(latest_alias)
+            resolved_alias = resolved_fn.aliases[resolved_qualifier]
+            resolved_fn.aliases[resolved_qualifier] = dataclasses.replace(resolved_alias)
         # Assumes that a non-alias is a version
         else:
-            latest_version = resolved_fn.versions[resolved_qualifier]
+            resolved_version = resolved_fn.versions[resolved_qualifier]
             resolved_fn.versions[resolved_qualifier] = dataclasses.replace(
-                latest_version, config=dataclasses.replace(latest_version.config)
+                resolved_version, config=dataclasses.replace(resolved_version.config)
             )
         return AddPermissionResponse(Statement=json.dumps(permission_statement))
 
@@ -1819,13 +1892,13 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
         # TODO: re-evaluate data model to prevent this dirty hack just for bumping the revision id
         # TODO: does that need a `with function.lock` for atomic updates of the policy + revision_id?
         if api_utils.qualifier_is_alias(resolved_qualifier):
-            latest_alias = resolved_fn.aliases[resolved_qualifier]
-            resolved_fn.aliases[resolved_qualifier] = dataclasses.replace(latest_alias)
+            resolved_alias = resolved_fn.aliases[resolved_qualifier]
+            resolved_fn.aliases[resolved_qualifier] = dataclasses.replace(resolved_alias)
         # Assumes that a non-alias is a version
         else:
-            latest_version = resolved_fn.versions[resolved_qualifier]
+            resolved_version = resolved_fn.versions[resolved_qualifier]
             resolved_fn.versions[resolved_qualifier] = dataclasses.replace(
-                latest_version, config=dataclasses.replace(latest_version.config)
+                resolved_version, config=dataclasses.replace(resolved_version.config)
             )
 
         # remove the policy as a whole when there's no statement left in it
@@ -1856,12 +1929,12 @@ class LambdaProvider(LambdaApi, ServiceLifecycleHook):
 
         fn_revision_id = None
         if api_utils.qualifier_is_alias(resolved_qualifier):
-            latest_alias = resolved_fn.aliases[resolved_qualifier]
-            fn_revision_id = latest_alias.revision_id
+            resolved_alias = resolved_fn.aliases[resolved_qualifier]
+            fn_revision_id = resolved_alias.revision_id
         # Assumes that a non-alias is a version
         else:
-            latest_version = resolved_fn.versions[resolved_qualifier]
-            fn_revision_id = latest_version.config.revision_id
+            resolved_version = resolved_fn.versions[resolved_qualifier]
+            fn_revision_id = resolved_version.config.revision_id
 
         return GetPolicyResponse(
             Policy=json.dumps(dataclasses.asdict(function_permission.policy)),

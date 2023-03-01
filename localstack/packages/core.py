@@ -106,6 +106,7 @@ class ArchiveDownloadAndExtractInstaller(ExecutableInstaller):
         archive_name = os.path.basename(download_url)
         download_and_extract(
             download_url,
+            retries=3,
             tmp_archive=os.path.join(config.dirs.tmp, archive_name),
             target_dir=target_directory,
         )
@@ -141,7 +142,12 @@ class GitHubReleaseInstaller(PermissionDownloadInstaller):
     @lru_cache()
     def _get_download_url(self) -> str:
         asset_name = self._get_github_asset_name()
-        response = requests.get(self.github_tag_url)
+        # try to use a token when calling the GH API for increased API rate limits
+        headers = None
+        gh_token = os.environ.get("GITHUB_API_TOKEN")
+        if gh_token:
+            headers = {"authorization": f"Bearer {gh_token}"}
+        response = requests.get(self.github_tag_url, headers=headers)
         if not response.ok:
             raise PackageException(
                 f"Could not get list of releases from {self.github_tag_url}: {response.text}"

@@ -1,7 +1,9 @@
 import abc
 import ast
 import base64
+import copy
 import datetime
+import hashlib
 import json
 import logging
 import time
@@ -251,7 +253,7 @@ class SqsTopicPublisher(TopicPublisher):
             LOG.exception("An internal error occurred while trying to format the message for SQS")
             return
         try:
-            queue_url = sqs_queue_url_for_arn(subscriber["Endpoint"])
+            queue_url: str = sqs_queue_url_for_arn(subscriber["Endpoint"])
             parsed_arn = parse_arn(subscriber["Endpoint"])
             sqs_client = aws_stack.connect_to_service("sqs", region_name=parsed_arn["region"])
             kwargs = {}
@@ -259,6 +261,14 @@ class SqsTopicPublisher(TopicPublisher):
                 kwargs["MessageGroupId"] = message_context.message_group_id
             if message_context.message_deduplication_id:
                 kwargs["MessageDeduplicationId"] = message_context.message_deduplication_id
+            elif queue_url.endswith(".fifo"):
+                # Amazon SNS uses the message body provided to generate a unique hash value to use as the deduplication
+                # ID for each message, so you don't need to set a deduplication ID when you send each message.
+                # https://docs.aws.amazon.com/sns/latest/dg/fifo-message-dedup.html
+                content = context.message.message_content("sqs")
+                kwargs["MessageDeduplicationId"] = hashlib.sha256(
+                    content.encode("utf-8")
+                ).hexdigest()
             sqs_client.send_message(
                 QueueUrl=queue_url,
                 MessageBody=message_body,
@@ -1092,21 +1102,22 @@ class PublishDispatcher:
             notifier = self.batch_topic_notifiers.get(protocol)
             # does the notifier supports batching natively? for now, only SQS supports it
             if notifier:
+                subscriber_ctx = ctx
                 messages_amount_before_filtering = len(ctx.messages)
-                ctx.messages = [
+                filtered_messages = [
                     message
                     for message in ctx.messages
                     if self._should_publish(ctx.store, message, subscriber)
                 ]
-                if not ctx.messages:
+                if not filtered_messages:
                     LOG.debug(
                         "No messages match filter policy, not publishing batch from topic '%s' to subscription '%s'",
                         topic_arn,
                         subscriber["SubscriptionArn"],
                     )
-                    return
+                    continue
 
-                messages_amount = len(ctx.messages)
+                messages_amount = len(filtered_messages)
                 if messages_amount != messages_amount_before_filtering:
                     LOG.debug(
                         "After applying subscription filter, %s out of %s message(s) to be sent to '%s'",
@@ -1114,6 +1125,10 @@ class PublishDispatcher:
                         messages_amount_before_filtering,
                         subscriber["SubscriptionArn"],
                     )
+                    # We need to copy the context to not overwrite the messages after filtering messages, otherwise we
+                    # would filter on the same context for different subscribers
+                    subscriber_ctx = copy.copy(ctx)
+                    subscriber_ctx.messages = filtered_messages
 
                 LOG.debug(
                     "Topic '%s' batch publishing %s messages to subscribed '%s' with protocol '%s' (subscription '%s')",
@@ -1123,7 +1138,9 @@ class PublishDispatcher:
                     subscriber["Protocol"],
                     subscriber["SubscriptionArn"],
                 )
-                self.executor.submit(notifier.publish, context=ctx, subscriber=subscriber)
+                self.executor.submit(
+                    notifier.publish, context=subscriber_ctx, subscriber=subscriber
+                )
             else:
                 # if no batch support, fall back to sending them sequentially
                 notifier = self.topic_notifiers[subscriber["Protocol"]]

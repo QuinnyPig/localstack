@@ -37,6 +37,7 @@ from localstack.services.apigateway.helpers import (
     path_based_url,
 )
 from localstack.services.awslambda.lambda_api import add_event_source, use_docker
+from localstack.services.awslambda.lambda_utils import LAMBDA_RUNTIME_PYTHON39
 from localstack.utils import testutil
 from localstack.utils.aws import arns, aws_stack, queries
 from localstack.utils.aws import resources as resource_util
@@ -49,7 +50,6 @@ from localstack.utils.sync import retry
 from tests.integration.apigateway_fixtures import (
     _client,
     api_invoke_url,
-    create_rest_api,
     create_rest_api_deployment,
     create_rest_api_integration,
     create_rest_api_integration_response,
@@ -93,6 +93,22 @@ APIGATEWAY_STEPFUNCTIONS_POLICY = {
     "Statement": [{"Effect": "Allow", "Action": "states:*", "Resource": "*"}],
 }
 
+APIGATEWAY_KINESIS_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": "kinesis:*", "Resource": "*"}],
+}
+
+APIGATEWAY_DYNAMODB_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": "dynamodb:*", "Resource": "*"}],
+}
+
+APIGATEWAY_LAMBDA_POLICY = {
+    "Version": "2012-10-17",
+    "Statement": [{"Effect": "Allow", "Action": "lambda:*", "Resource": "*"}],
+}
+
+
 APIGATEWAY_ASSUME_ROLE_POLICY = {
     "Statement": {
         "Sid": "",
@@ -100,10 +116,6 @@ APIGATEWAY_ASSUME_ROLE_POLICY = {
         "Principal": {"Service": "apigateway.amazonaws.com"},
         "Action": "sts:AssumeRole",
     }
-}
-APIGATEWAY_LAMBDA_POLICY = {
-    "Version": "2012-10-17",
-    "Statement": [{"Effect": "Allow", "Action": "lambda:*", "Resource": "*"}],
 }
 
 THIS_FOLDER = os.path.dirname(os.path.realpath(__file__))
@@ -236,7 +248,6 @@ class TestAPIGateway:
         assert response.ok
         assert response._content == b'{"echo": "foobar", "response": "mocked"}'
 
-    @pytest.mark.skip
     def test_api_gateway_kinesis_integration(self):
         # create target Kinesis stream
         stream = resource_util.create_kinesis_stream(self.TEST_STREAM_KINESIS_API_GW)
@@ -610,7 +621,9 @@ class TestAPIGateway:
             }
         ]
         api_id = self.create_api_gateway_and_deploy(
-            integration_type="MOCK", integration_responses=responses
+            integration_type="MOCK",
+            integration_responses=responses,
+            stage_name=self.TEST_STAGE_NAME,
         )
 
         # invoke endpoint with Origin header
@@ -868,7 +881,7 @@ class TestAPIGateway:
         target_uri = arns.apigateway_invocations_arn(lambda_uri)
 
         # create REST API
-        api_id, _, _ = create_rest_apigw(name="test-api", description="")
+        api_id, _, _ = create_rest_apigw(name="test-api")
         root_res_id = apigateway_client.get_resources(restApiId=api_id)["items"][0]["id"]
         api_resource = apigateway_client.create_resource(
             restApiId=api_id, parentId=root_res_id, pathPart="test"
@@ -1027,7 +1040,7 @@ class TestAPIGateway:
         lambda_uri = arns.lambda_function_arn(lambda_name)
 
         # create REST API
-        api_id, _, _ = create_rest_apigw(name="test-api", description="")
+        api_id, _, _ = create_rest_apigw(name="test-api")
         root_res_id = apigateway_client.get_resources(restApiId=api_id)["items"][0]["id"]
 
         # create authorizer at root resource
@@ -1284,45 +1297,43 @@ class TestAPIGateway:
         assert model_name == result["name"]
         assert description == result["description"]
 
-        try:
+        with pytest.raises(ClientError) as e:
             apigateway_client.get_model(restApiId=dummy_rest_api_id, modelName=model_name)
-            self.fail("This call should not be successful as the model is not created.")
-        except ClientError as e:
-            assert "NotFoundException" == e.response["Error"]["Code"]
-            assert "Invalid Rest API Id specified" == e.response["Error"]["Message"]
+        assert e.value.response["Error"]["Code"] == "NotFoundException"
+        assert e.value.response["Error"]["Message"] == "Invalid Rest API Id specified"
 
     def test_get_model_with_invalid_name(self, apigateway_client, create_rest_apigw):
         rest_api_id, _, _ = create_rest_apigw(name="my_api", description="this is my api")
 
         # test with an invalid model name
-        try:
+        with pytest.raises(ClientError) as e:
             apigateway_client.get_model(restApiId=rest_api_id, modelName="fake")
-            self.fail("This call should not be successful as the model is not created.")
+        assert "NotFoundException" == e.value.response["Error"]["Code"]
 
-        except ClientError as e:
-            assert "NotFoundException" == e.response["Error"]["Code"]
-
-    def test_put_integration_dynamodb_proxy_validation_without_response_template(self):
-        api_id = self.create_api_gateway_and_deploy({})
+    def test_put_integration_dynamodb_proxy_validation_without_request_template(self):
+        api_id = self.create_api_gateway_and_deploy()
         url = path_based_url(api_id=api_id, stage_name="staging", path="/")
         response = requests.put(
             url,
             json.dumps({"id": "id1", "data": "foobar123"}),
         )
 
-        assert 404 == response.status_code
+        assert 400 == response.status_code
 
-    def test_put_integration_dynamodb_proxy_validation_with_response_template(self):
-        response_templates = {
+    def test_put_integration_dynamodb_proxy_validation_with_request_template(self):
+        request_templates = {
             "application/json": json.dumps(
                 {
                     "TableName": "MusicCollection",
-                    "Item": {"id": "$.Id", "data": "$.data"},
+                    "Item": {
+                        "id": {"S": "$input.path('id')"},
+                        "data": {"S": "$input.path('data')"},
+                    },
                 }
             )
         }
 
-        api_id = self.create_api_gateway_and_deploy(response_templates)
+        api_id = self.create_api_gateway_and_deploy(request_templates=request_templates)
         url = path_based_url(api_id=api_id, stage_name="staging", path="/")
 
         response = requests.put(
@@ -1337,16 +1348,21 @@ class TestAPIGateway:
         assert "foobar123" == result["Item"]["data"]
 
     def test_api_key_required_for_methods(self):
-        response_templates = {
+        request_templates = {
             "application/json": json.dumps(
                 {
                     "TableName": "MusicCollection",
-                    "Item": {"id": "$.Id", "data": "$.data"},
+                    "Item": {
+                        "id": {"S": "$input.path('id')"},
+                        "data": {"S": "$input.path('data')"},
+                    },
                 }
             )
         }
 
-        api_id = self.create_api_gateway_and_deploy(response_templates, True)
+        api_id = self.create_api_gateway_and_deploy(
+            request_templates=request_templates, is_api_key_required=True
+        )
         url = path_based_url(api_id=api_id, stage_name="staging", path="/")
 
         payload = {
@@ -1388,16 +1404,21 @@ class TestAPIGateway:
         assert 200 == response.status_code
 
     def test_multiple_api_keys_validate(self, apigateway_client):
-        response_templates = {
+        request_templates = {
             "application/json": json.dumps(
                 {
                     "TableName": "MusicCollection",
-                    "Item": {"id": "$.Id", "data": "$.data"},
+                    "Item": {
+                        "id": {"S": "$input.path('id')"},
+                        "data": {"S": "$input.path('data')"},
+                    },
                 }
             )
         }
 
-        api_id = self.create_api_gateway_and_deploy(response_templates, True)
+        api_id = self.create_api_gateway_and_deploy(
+            request_templates=request_templates, is_api_key_required=True
+        )
         url = path_based_url(api_id=api_id, stage_name="staging", path="/")
 
         # Create multiple usage plans
@@ -1609,19 +1630,22 @@ class TestAPIGateway:
 
         test_data = {"test": "test-value"}
         url = api_invoke_url(api_id=rest_api, stage="dev", path="/")
+
+        req_template = {
+            "application/json": """
+            {
+            "input": "$util.escapeJavaScript($input.json('$'))",
+            "stateMachineArn": "%s"
+            }
+            """
+            % sm_arn
+        }
         match action:
             case "StartExecution":
-                req_template = {
-                    "application/json": """
-                            #set($data = $util.escapeJavaScript($input.json('$')))
-                            {"input": "$data", "stateMachineArn": "%s"}
-                        """
-                    % sm_arn
-                }
                 _prepare_integration(req_template, response_template={})
                 apigateway_client.create_deployment(restApiId=rest_api, stageName="dev")
-                # invoke stepfunction via API GW, assert results
 
+                # invoke stepfunction via API GW, assert results
                 def _invoke_start_step_function():
                     resp = requests.post(url, data=json.dumps(test_data))
                     assert resp.ok
@@ -1633,13 +1657,9 @@ class TestAPIGateway:
 
             case "StartSyncExecution":
                 resp_template = {APPLICATION_JSON: "$input.path('$.output')"}
-                _prepare_integration({}, resp_template)
+                _prepare_integration(req_template, resp_template)
                 apigateway_client.create_deployment(restApiId=rest_api, stageName="dev")
-                input_data = {
-                    "input": json.dumps(test_data),
-                    "name": "MyExecution",
-                    "stateMachineArn": sm_arn,
-                }
+                input_data = {"input": json.dumps(test_data), "name": "MyExecution"}
 
                 def _invoke_start_sync_step_function():
                     input_data["name"] += "1"
@@ -1792,7 +1812,7 @@ class TestAPIGateway:
         assert "POST,OPTIONS" == result.headers.get("Access-Control-Allow-Methods")
 
     def test_api_gateway_update_resource_path_part(self, apigateway_client, create_rest_apigw):
-        api_id, _, _ = create_rest_apigw(name="test-api", description="")
+        api_id, _, _ = create_rest_apigw(name="test-api")
         root_res_id = apigateway_client.get_resources(restApiId=api_id)["items"][0]["id"]
         api_resource = apigateway_client.create_resource(
             restApiId=api_id, parentId=root_res_id, pathPart="test"
@@ -2019,13 +2039,16 @@ class TestAPIGateway:
 
     @staticmethod
     def create_api_gateway_and_deploy(
+        request_templates=None,
         response_templates=None,
         is_api_key_required=False,
         integration_type=None,
         integration_responses=None,
+        stage_name="staging",
     ):
         response_templates = response_templates or {}
-        integration_type = integration_type or "AWS_PROXY"
+        request_templates = request_templates or {}
+        integration_type = integration_type or "AWS"
         apigw_client = aws_stack.create_external_boto_client("apigateway")
         response = apigw_client.create_rest_api(name="my_api", description="this is my api")
         api_id = response["id"]
@@ -2034,7 +2057,7 @@ class TestAPIGateway:
         root_id = root_resources[0]["id"]
 
         kwargs = {}
-        if integration_type == "AWS_PROXY":
+        if integration_type == "AWS":
             resource_util.create_dynamodb_table("MusicCollection", partition_key="id")
             kwargs[
                 "uri"
@@ -2065,6 +2088,7 @@ class TestAPIGateway:
                 httpMethod=resp_details["httpMethod"],
                 integrationHttpMethod=resp_details["httpMethod"],
                 type=integration_type,
+                requestTemplates=request_templates,
                 **kwargs,
             )
 
@@ -2076,7 +2100,7 @@ class TestAPIGateway:
                 **resp_details,
             )
 
-        apigw_client.create_deployment(restApiId=api_id, stageName="staging")
+        apigw_client.create_deployment(restApiId=api_id, stageName=stage_name)
         return api_id
 
     @pytest.mark.parametrize("base_path_type", ["ignore", "prepend", "split"])
@@ -2136,13 +2160,111 @@ class TestAPIGateway:
         assert "/pets" in paths
         assert "/pets/{petId}" in paths
 
+    @pytest.mark.aws_validated
+    @pytest.mark.parametrize("stage_name", ["local", "dev"])
+    def test_apigw_stage_variables(
+        self,
+        apigateway_client,
+        create_lambda_function,
+        create_rest_apigw,
+        lambda_client,
+        sts_client,
+        stage_name,
+    ):
+        aws_account_id = sts_client.get_caller_identity()["Account"]
+        region_name = apigateway_client._client_config.region_name
+        api_id, _, root = create_rest_apigw(name="aws lambda api")
+        resource_id, _ = create_rest_resource(
+            apigateway_client, restApiId=api_id, parentId=root, pathPart="test"
+        )
+        create_rest_resource_method(
+            apigateway_client,
+            restApiId=api_id,
+            resourceId=resource_id,
+            httpMethod="POST",
+            authorizationType="NONE",
+        )
+
+        fn_name = f"test-{short_uid()}"
+        create_lambda_function(
+            func_name=fn_name,
+            handler_file=TEST_LAMBDA_PYTHON_ECHO,
+            runtime=LAMBDA_RUNTIME_PYTHON39,
+        )
+        lambda_arn = lambda_client.get_function(FunctionName=fn_name)["Configuration"][
+            "FunctionArn"
+        ]
+
+        if stage_name == "dev":
+            uri = f"arn:aws:apigateway:{region_name}:lambda:path/2015-03-31/functions/arn:aws:lambda:{region_name}:{aws_account_id}:function:${{stageVariables.lambdaFunction}}/invocations"
+        else:
+            uri = f"arn:aws:apigateway:{region_name}:lambda:path/2015-03-31/functions/arn:aws:lambda:{region_name}:{aws_account_id}:function:{fn_name}/invocations"
+
+        create_rest_api_integration(
+            apigateway_client,
+            restApiId=api_id,
+            resourceId=resource_id,
+            httpMethod="POST",
+            integrationHttpMethod="POST",
+            type="AWS",
+            uri=uri,
+            requestTemplates={"application/json": '{ "version": "$stageVariables.version" }'},
+        )
+        create_rest_api_method_response(
+            apigateway_client,
+            restApiId=api_id,
+            resourceId=resource_id,
+            httpMethod="POST",
+            statusCode="200",
+            responseParameters={
+                "method.response.header.Content-Type": False,
+                "method.response.header.Access-Control-Allow-Origin": False,
+            },
+        )
+        create_rest_api_integration_response(
+            apigateway_client,
+            restApiId=api_id,
+            resourceId=resource_id,
+            httpMethod="POST",
+            statusCode="200",
+        )
+        deployment_id, _ = create_rest_api_deployment(apigateway_client, restApiId=api_id)
+
+        stage_variables = (
+            {"lambdaFunction": fn_name, "version": "1.0"} if stage_name == "dev" else {}
+        )
+        create_rest_api_stage(
+            apigateway_client,
+            restApiId=api_id,
+            stageName=stage_name,
+            deploymentId=deployment_id,
+            variables=stage_variables,
+        )
+
+        source_arn = f"arn:aws:execute-api:{region_name}:{aws_account_id}:{api_id}/*/*/test"
+        lambda_client.add_permission(
+            FunctionName=lambda_arn,
+            StatementId=str(short_uid()),
+            Action="lambda:InvokeFunction",
+            Principal="apigateway.amazonaws.com",
+            SourceArn=source_arn,
+        )
+
+        url = api_invoke_url(api_id, stage=stage_name, path="/test")
+        response = requests.post(url, json={"test": "test"})
+
+        if stage_name == "local":
+            assert response.json() == {"version": ""}
+        else:
+            assert response.json() == {"version": "1.0"}
+
 
 def test_import_swagger_api(apigateway_client):
     api_spec = load_test_resource("openapi.swagger.json")
     api_spec_dict = json.loads(api_spec)
 
     backend = apigateway_backends[TEST_AWS_ACCOUNT_ID][TEST_AWS_REGION_NAME]
-    api_model = backend.create_rest_api(name="", description="")
+    api_model = backend.create_rest_api(name="api_name", description="description-1")
 
     imported_api = import_api_from_openapi_spec(api_model, api_spec_dict, {})
 
@@ -2258,12 +2380,16 @@ def test_apigw_call_api_with_aws_endpoint_url():
 
 @pytest.mark.parametrize("method", ["GET", "ANY"])
 @pytest.mark.parametrize("url_function", [path_based_url, host_based_url])
-def test_rest_api_multi_region(method, url_function):
+def test_rest_api_multi_region(method, url_function, create_rest_apigw):
     apigateway_client_eu = _client("apigateway", region_name="eu-west-1")
     apigateway_client_us = _client("apigateway", region_name="us-west-1")
 
-    api_eu_id, _, root_resource_eu_id = create_rest_api(apigateway_client_eu, name="test-eu-region")
-    api_us_id, _, root_resource_us_id = create_rest_api(apigateway_client_us, name="test-us-region")
+    api_eu_id, _, root_resource_eu_id = create_rest_apigw(
+        name="test-eu-region", region_name="eu-west-1"
+    )
+    api_us_id, _, root_resource_us_id = create_rest_apigw(
+        name="test-us-region", region_name="us-west-1"
+    )
 
     resource_eu_id, _ = create_rest_resource(
         apigateway_client_eu, restApiId=api_eu_id, parentId=root_resource_eu_id, pathPart="demo"

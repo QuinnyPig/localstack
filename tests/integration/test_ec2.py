@@ -1,4 +1,35 @@
+import contextlib
+
+import pytest
+from botocore.exceptions import ClientError
+from moto.ec2 import ec2_backends
+
 from localstack.utils.aws import aws_stack
+from localstack.utils.strings import short_uid
+
+# public amazon image used for ec2 launch templates
+PUBLIC_AMAZON_LINUX_IMAGE = "ami-06c39ed6b42908a36"
+PUBLIC_AMAZON_UBUNTU_IMAGE = "ami-03e08697c325f02ab"
+
+
+@pytest.fixture()
+def create_launch_template(ec2_client):
+    template_ids = []
+
+    def create(template_name):
+        response = ec2_client.create_launch_template(
+            LaunchTemplateName=template_name,
+            LaunchTemplateData={
+                "ImageId": PUBLIC_AMAZON_LINUX_IMAGE,
+            },
+        )
+        template_ids.append(response["LaunchTemplate"]["LaunchTemplateId"])
+        return response
+
+    yield create
+    for id in template_ids:
+        with contextlib.suppress(ClientError):
+            ec2_client.delete_launch_template(LaunchTemplateId=id)
 
 
 class TestEc2Integrations:
@@ -277,3 +308,140 @@ class TestEc2Integrations:
 
         # clean up
         ec2_client.delete_vpc(VpcId=vpc_id)
+
+    @pytest.mark.aws_validated
+    @pytest.mark.parametrize("id_type", ["id", "name"])
+    def test_modify_launch_template(self, ec2_client, create_launch_template, id_type):
+        launch_template_result = create_launch_template(f"template-with-versions-{short_uid()}")
+        template = launch_template_result["LaunchTemplate"]
+
+        # call the API identifying the template either by `LaunchTemplateId` or `LaunchTemplateName`
+        kwargs = (
+            {"LaunchTemplateId": template["LaunchTemplateId"]}
+            if (id_type == "id")
+            else {"LaunchTemplateName": template["LaunchTemplateName"]}
+        )
+
+        new_version_result = ec2_client.create_launch_template_version(
+            LaunchTemplateData={"ImageId": PUBLIC_AMAZON_UBUNTU_IMAGE}, **kwargs
+        )
+
+        new_default_version = new_version_result["LaunchTemplateVersion"]["VersionNumber"]
+        ec2_client.modify_launch_template(
+            LaunchTemplateId=template["LaunchTemplateId"],
+            DefaultVersion=str(new_default_version),
+        )
+
+        modified_template = ec2_client.describe_launch_templates(
+            LaunchTemplateIds=[template["LaunchTemplateId"]]
+        )
+        assert modified_template["LaunchTemplates"][0]["DefaultVersionNumber"] == int(
+            new_default_version
+        )
+
+
+@pytest.mark.aws_validated
+def test_raise_modify_to_invalid_default_version(ec2_client, create_launch_template):
+    launch_template_result = create_launch_template(f"my-first-launch-template-{short_uid()}")
+    template = launch_template_result["LaunchTemplate"]
+
+    with pytest.raises(ClientError) as e:
+        ec2_client.modify_launch_template(
+            LaunchTemplateId=template["LaunchTemplateId"], DefaultVersion="666"
+        )
+    assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+    assert e.value.response["Error"]["Code"] == "InvalidLaunchTemplateId.VersionNotFound"
+
+
+@pytest.mark.aws_validated
+def test_raise_when_launch_template_data_missing(ec2_client):
+    with pytest.raises(ClientError) as e:
+        ec2_client.create_launch_template(
+            LaunchTemplateName=f"unique_name-{short_uid()}", LaunchTemplateData={}
+        )
+    assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+    assert e.value.response["Error"]["Code"] == "MissingParameter"
+
+
+@pytest.mark.aws_validated
+def test_raise_invalid_launch_template_name(create_launch_template):
+    with pytest.raises(ClientError) as e:
+        create_launch_template(f"some illegal name {short_uid()}")
+
+    assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+    assert e.value.response["Error"]["Code"] == "InvalidLaunchTemplateName.MalformedException"
+
+
+@pytest.mark.aws_validated
+def test_raise_duplicate_launch_template_name(ec2_client, create_launch_template):
+    create_launch_template("name")
+
+    with pytest.raises(ClientError) as e:
+        create_launch_template("name")
+
+    assert e.value.response["ResponseMetadata"]["HTTPStatusCode"] == 400
+    assert e.value.response["Error"]["Code"] == "InvalidLaunchTemplateName.AlreadyExistsException"
+
+
+@pytest.fixture
+def pickle_backends():
+    def _can_pickle(*args) -> bool:
+        import dill
+
+        try:
+            for i in args:
+                dill.dumps(i)
+        except TypeError:
+            return False
+        return True
+
+    return _can_pickle
+
+
+def test_pickle_ec2_backend(ec2_client, pickle_backends):
+    _ = ec2_client.describe_account_attributes()
+    pickle_backends(ec2_backends)
+    assert pickle_backends(ec2_backends)
+
+
+@pytest.mark.aws_validated
+def test_route_table_filter(ec2_client, cleanups):
+    """
+    https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_DescribeRouteTables.html
+
+    Tests two filters:
+    - "route.destination-cidr-block"
+    - "route-table-id"
+
+    """
+    vpc = ec2_client.create_vpc(CidrBlock="10.0.99.0/24")
+    vpc_id = vpc["Vpc"]["VpcId"]
+    cleanups.append(lambda: ec2_client.delete_vpc(VpcId=vpc_id))
+
+    gateway_id = ec2_client.create_internet_gateway()["InternetGateway"]["InternetGatewayId"]
+    cleanups.append(lambda: ec2_client.delete_internet_gateway(InternetGatewayId=gateway_id))
+
+    ec2_client.attach_internet_gateway(InternetGatewayId=gateway_id, VpcId=vpc_id)
+    cleanups.append(
+        lambda: ec2_client.detach_internet_gateway(InternetGatewayId=gateway_id, VpcId=vpc_id)
+    )
+
+    create_route_table_response = ec2_client.create_route_table(VpcId=vpc_id)
+    route_table_id = create_route_table_response["RouteTable"]["RouteTableId"]
+    cleanups.append(lambda: ec2_client.delete_route_table(RouteTableId=route_table_id))
+
+    ec2_client.create_route(
+        RouteTableId=route_table_id, DestinationCidrBlock="0.0.0.0/0", GatewayId=gateway_id
+    )
+
+    result = ec2_client.describe_route_tables(
+        Filters=[
+            {"Name": "route.destination-cidr-block", "Values": ["0.0.0.0/0"]},
+            {"Name": "route-table-id", "Values": [route_table_id]},
+        ]
+    )
+    tables = result["RouteTables"]
+    assert len(tables) == 1
+    table = tables[0]
+    assert table["VpcId"] == vpc_id
+    assert table["RouteTableId"] == route_table_id

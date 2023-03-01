@@ -48,21 +48,6 @@ REGEX_DYNAMIC_REF = re.compile("{{resolve:([^:]+):(.+)}}")
 
 LOG = logging.getLogger(__name__)
 
-# list of resource types that can be updated
-# TODO: make this a property of the model classes themselves
-UPDATEABLE_RESOURCES = [
-    "AWS::CDK::Metadata",
-    "AWS::Lambda::Function",
-    "AWS::Lambda::Permission",
-    "AWS::ApiGateway::Method",
-    "AWS::ApiGateway::UsagePlan",
-    "AWS::SSM::Parameter",
-    "AWS::StepFunctions::StateMachine",
-    "AWS::IAM::Role",
-    "AWS::IAM::AccessKey",
-    "AWS::EC2::Instance",
-]
-
 # list of static attribute references to be replaced in {'Fn::Sub': '...'} strings
 STATIC_REFS = ["AWS::Region", "AWS::Partition", "AWS::StackName", "AWS::AccountId"]
 
@@ -641,7 +626,9 @@ def update_resource(resource_id, stack):
 
     resource = resources[resource_id]
     resource_type = get_resource_type(resource)
-    if resource_type not in UPDATEABLE_RESOURCES:
+
+    resource_instance = get_resource_model_instance(resource["LogicalResourceId"], stack)
+    if not resource_instance.is_updatable():
         LOG.warning('Unable to update resource type "%s", id "%s"', resource_type, resource_id)
         return
     LOG.info("Updating resource %s of type %s", resource_id, resource_type)
@@ -1019,11 +1006,42 @@ class TemplateDeployer:
         for key, resource in resources.items():
             resource["Properties"] = resource.get("Properties", clone_safe(resource))
             resource["ResourceType"] = resource.get("ResourceType") or resource.get("Type")
-        for resource_id, resource in resources.items():
-            # TODO: cache condition value in resource details on deployment and use cached value here
-            if evaluate_resource_condition(self, resource):
-                execute_resource_action(resource_id, self, ACTION_DELETE)
-                self.stack.set_resource_status(resource_id, "DELETE_COMPLETE")
+
+        def _safe_lookup_is_deleted(r_id):
+            """handles the case where self.stack.resource_status(..) fails for whatever reason"""
+            try:
+                return self.stack.resource_status(r_id).get("ResourceStatus") == "DELETE_COMPLETE"
+            except Exception:
+                return True  # just an assumption
+
+        # a bit of a workaround until we have a proper dependency graph
+        max_cycle = 10  # 10 cycles should be a safe choice for now
+        for iteration_cycle in range(1, max_cycle + 1):
+            resources = {
+                r_id: r for r_id, r in resources.items() if not _safe_lookup_is_deleted(r_id)
+            }
+            if len(resources) == 0:
+                break
+            for resource_id, resource in resources.items():
+                try:
+                    # TODO: cache condition value in resource details on deployment and use cached value here
+                    if evaluate_resource_condition(self, resource):
+                        execute_resource_action(resource_id, self, ACTION_DELETE)
+                        self.stack.set_resource_status(resource_id, "DELETE_COMPLETE")
+                except Exception as e:
+                    if iteration_cycle == max_cycle:
+                        LOG.exception(
+                            "Last cycle failed to delete resource with id %s. Final exception: %s",
+                            resource_id,
+                            e,
+                        )
+                    else:
+                        LOG.warning(
+                            "Failed delete of resource with id %s in iteration cycle %d. Retrying in next cycle.",
+                            resource_id,
+                            iteration_cycle,
+                        )
+
         # update status
         self.stack.set_stack_status("DELETE_COMPLETE")
         self.stack.set_time_attribute("DeletionTime")
@@ -1050,11 +1068,8 @@ class TemplateDeployer:
         """Return whether the given resource can be updated or not."""
         if not self.is_deployable_resource(resource) or not self.is_deployed(resource):
             return False
-        resource_type = get_resource_type(resource)
-        return (
-            resource_type in UPDATEABLE_RESOURCES
-            or resource_type.partition("AWS::")[-1] in UPDATEABLE_RESOURCES
-        )  # TODO: second case just a fall-back for now, delete when PRO is updated
+        resource_instance = get_resource_model_instance(resource["LogicalResourceId"], self.stack)
+        return resource_instance.is_updatable()
 
     def all_resource_dependencies_satisfied(self, resource):
         unsatisfied = self.get_unsatisfied_dependencies(resource)
@@ -1447,6 +1462,8 @@ class TemplateDeployer:
             res_change["_deployed"] = is_deployed
             if not is_deployed:
                 return True
+            if action == "Add":
+                return False
             if action == "Modify" and not self.is_updateable(resource):
                 LOG.debug(
                     'Action "update" not yet implemented for CF resource type %s',

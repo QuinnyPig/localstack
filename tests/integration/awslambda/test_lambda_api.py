@@ -18,14 +18,15 @@ from typing import Callable
 import pytest
 import requests
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, ParamValidationError
 
 from localstack.aws.api.lambda_ import Architecture, Runtime
 from localstack.testing.aws.lambda_utils import _await_dynamodb_table_active, is_old_provider
 from localstack.testing.aws.util import is_aws_cloud
+from localstack.testing.pytest.fixtures import _client
 from localstack.testing.snapshots.transformer import SortingTransformer
 from localstack.utils import testutil
-from localstack.utils.aws import arns
+from localstack.utils.aws import arns, aws_stack
 from localstack.utils.docker_utils import DOCKER_CLIENT
 from localstack.utils.files import load_file
 from localstack.utils.functions import call_safe
@@ -426,6 +427,45 @@ class TestLambdaFunction:
                 Runtime="PYTHON3.9",
             )
         snapshot.match("uppercase_runtime_exc", e.value.response)
+
+        # test empty architectures
+        with pytest.raises(ParamValidationError) as e:
+            lambda_client.create_function(
+                FunctionName=function_name,
+                Handler="index.handler",
+                Code={"ZipFile": zip_file_bytes},
+                PackageType="Zip",
+                Role=lambda_su_role,
+                Runtime=Runtime.python3_9,
+                Architectures=[],
+            )
+        snapshot.match("empty_architectures", e.value)
+
+        # test multiple architectures
+        with pytest.raises(ClientError) as e:
+            lambda_client.create_function(
+                FunctionName=function_name,
+                Handler="index.handler",
+                Code={"ZipFile": zip_file_bytes},
+                PackageType="Zip",
+                Role=lambda_su_role,
+                Runtime=Runtime.python3_9,
+                Architectures=[Architecture.x86_64, Architecture.arm64],
+            )
+        snapshot.match("multiple_architectures", e.value.response)
+
+        # test invalid architecture: capital "X" instead of "x"
+        with pytest.raises(ClientError) as e:
+            lambda_client.create_function(
+                FunctionName=function_name,
+                Handler="index.handler",
+                Code={"ZipFile": zip_file_bytes},
+                PackageType="Zip",
+                Role=lambda_su_role,
+                Runtime=Runtime.python3_9,
+                Architectures=["X86_64"],
+            )
+        snapshot.match("uppercase_architecture", e.value.response)
 
         # test what happens with an invalid zip file
         with pytest.raises(ClientError) as e:
@@ -3794,6 +3834,41 @@ class TestLambdaEventSourceMappings:
         #
         # lambda_client.delete_event_source_mapping(UUID=uuid)
 
+    @pytest.mark.skipif(is_old_provider(), reason="new provider only")
+    def test_create_event_source_validation(
+        self,
+        create_lambda_function,
+        lambda_su_role,
+        dynamodb_client,
+        dynamodb_create_table,
+        lambda_client,
+        snapshot,
+    ):
+        function_name = f"function-{short_uid()}"
+        create_lambda_function(
+            handler_file=TEST_LAMBDA_PYTHON_ECHO,
+            func_name=function_name,
+            runtime=Runtime.python3_9,
+            role=lambda_su_role,
+        )
+
+        table_name = f"table-{short_uid()}"
+        dynamodb_create_table(table_name=table_name, partition_key="id")
+        _await_dynamodb_table_active(dynamodb_client, table_name)
+        update_table_response = dynamodb_client.update_table(
+            TableName=table_name,
+            StreamSpecification={"StreamEnabled": True, "StreamViewType": "NEW_AND_OLD_IMAGES"},
+        )
+        stream_arn = update_table_response["TableDescription"]["LatestStreamArn"]
+
+        with pytest.raises(ClientError) as e:
+            lambda_client.create_event_source_mapping(
+                FunctionName=function_name, EventSourceArn=stream_arn
+            )
+
+        response = e.value.response
+        snapshot.match("error", response)
+
 
 @pytest.mark.skipif(condition=is_old_provider(), reason="not correctly supported")
 class TestLambdaTags:
@@ -4103,15 +4178,11 @@ class TestLambdaLayer:
             )
         snapshot.match("publish_layer_version_exc_partially_invalid_values", e.value.response)
 
+    @pytest.mark.skip_snapshot_verify(paths=["$..SnapStart"])  # FIXME: new lambda feature
     def test_layer_function_exceptions(
         self, lambda_client, create_lambda_function, snapshot, dummylayer, cleanups
     ):
-        """
-        Test interaction of layers when adding them to the function
-
-        TODO: add test for adding a layer with an incompatible runtime/arch
-        TODO: add test for > 5 layers
-        """
+        """Test interaction of layers when adding them to the function"""
         function_name = f"fn-layer-{short_uid()}"
         layer_name = f"testlayer-{short_uid()}"
 
@@ -4216,6 +4287,61 @@ class TestLambdaLayer:
                 FunctionName=function_name, Layers=[publish_result["LayerArn"]]
             )
         snapshot.match("add_layer_arn_without_version_exc", e.value.response)
+
+        other_region = "us-west-2"
+        assert other_region != aws_stack.get_region()
+        other_region_lambda_client = _client("lambda", region_name=other_region)
+        other_region_layer_result = other_region_lambda_client.publish_layer_version(
+            LayerName=layer_name,
+            CompatibleRuntimes=[],
+            Content={"ZipFile": dummylayer},
+            CompatibleArchitectures=[Architecture.x86_64],
+        )
+        cleanups.append(
+            lambda: other_region_lambda_client.delete_layer_version(
+                LayerName=layer_name, VersionNumber=other_region_layer_result["Version"]
+            )
+        )
+        with pytest.raises(lambda_client.exceptions.ClientError) as e:
+            create_lambda_function(
+                func_name=function_name,
+                handler_file=TEST_LAMBDA_PYTHON_ECHO,
+                layers=[other_region_layer_result["LayerVersionArn"]],
+            )
+        snapshot.match("create_function_with_layer_in_different_region", e.value.response)
+
+    @pytest.mark.skip_snapshot_verify(paths=["$..SnapStart"])  # FIXME: new lambda feature
+    def test_layer_function_quota_exception(
+        self, lambda_client, create_lambda_function, snapshot, dummylayer, cleanups
+    ):
+        """Test lambda quota of "up to five layers"
+        Layer docs: https://docs.aws.amazon.com/lambda/latest/dg/invocation-layers.html#invocation-layers-using
+        Lambda quota: https://docs.aws.amazon.com/lambda/latest/dg/gettingstarted-limits.html#function-configuration-deployment-and-execution
+        """
+        layer_arns = []
+        for n in range(6):
+            layer_name_N = f"testlayer-{n+1}-{short_uid()}"
+            publish_result_N = lambda_client.publish_layer_version(
+                LayerName=layer_name_N,
+                CompatibleRuntimes=[],
+                Content={"ZipFile": dummylayer},
+                CompatibleArchitectures=[Architecture.x86_64],
+            )
+            cleanups.append(
+                lambda: lambda_client.delete_layer_version(
+                    LayerName=layer_name_N, VersionNumber=publish_result_N["Version"]
+                )
+            )
+            layer_arns.append(publish_result_N["LayerVersionArn"])
+
+        function_name = f"fn-layer-{short_uid()}"
+        with pytest.raises(lambda_client.exceptions.ClientError) as e:
+            create_lambda_function(
+                func_name=function_name,
+                handler_file=TEST_LAMBDA_PYTHON_ECHO,
+                layers=layer_arns,
+            )
+        snapshot.match("create_function_with_six_layers", e.value.response)
 
     @pytest.mark.aws_validated
     def test_layer_lifecycle(

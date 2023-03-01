@@ -81,6 +81,7 @@ from localstack.aws.api.opensearch import (
 from localstack.config import LOCALSTACK_HOSTNAME
 from localstack.constants import OPENSEARCH_DEFAULT_VERSION
 from localstack.services.opensearch import versions
+from localstack.services.opensearch.cluster import SecurityOptions
 from localstack.services.opensearch.cluster_manager import (
     ClusterManager,
     DomainKey,
@@ -89,10 +90,13 @@ from localstack.services.opensearch.cluster_manager import (
 from localstack.services.opensearch.models import OpenSearchStore, opensearch_stores
 from localstack.utils.aws.request_context import get_region_from_request_context
 from localstack.utils.collections import PaginatedList, remove_none_values_from_dict
-from localstack.utils.objects import singleton_factory
 from localstack.utils.serving import Server
 
 LOG = logging.getLogger(__name__)
+
+# The singleton for the ClusterManager instance.
+# The singleton is implemented this way only to be able to overwrite its value during tests.
+__CLUSTER_MANAGER = None
 
 # mutex for modifying domains
 _domain_mutex = threading.RLock()
@@ -107,9 +111,11 @@ DEFAULT_OPENSEARCH_CLUSTER_CONFIG = ClusterConfig(
 )
 
 
-@singleton_factory
 def cluster_manager() -> ClusterManager:
-    return create_cluster_manager()
+    global __CLUSTER_MANAGER
+    if __CLUSTER_MANAGER is None:
+        __CLUSTER_MANAGER = create_cluster_manager()
+    return __CLUSTER_MANAGER
 
 
 def _run_cluster_startup_monitor(cluster: Server, domain_name: str, region: str):
@@ -131,19 +137,24 @@ def create_cluster(
     domain_key: DomainKey,
     engine_version: str,
     domain_endpoint_options: Optional[DomainEndpointOptions],
+    security_options: Optional[SecurityOptions],
     preferred_port: Optional[int] = None,
 ):
     """
-    Uses the ClusterManager to create a new cluster for the given domain_name in the region of the current request
-    context. NOT thread safe, needs to be called around _domain_mutex.
+    Uses the ClusterManager to create a new cluster for the given domain key. NOT thread safe, needs to be called
+    around _domain_mutex.
     If the preferred_port is given, this port will be preferred (if OPENSEARCH_ENDPOINT_STRATEGY == "port").
     """
-    store = OpensearchProvider.get_store()
+    store = opensearch_stores[domain_key.account][domain_key.region]
 
     manager = cluster_manager()
     engine_version = engine_version or OPENSEARCH_DEFAULT_VERSION
     cluster = manager.create(
-        domain_key.arn, engine_version, domain_endpoint_options, preferred_port
+        arn=domain_key.arn,
+        version=engine_version,
+        endpoint_options=domain_endpoint_options,
+        security_options=security_options,
+        preferred_port=preferred_port,
     )
 
     # FIXME: in AWS, the Endpoint is set once the cluster is running, not before (like here), but our tests and
@@ -427,13 +438,14 @@ class OpensearchProvider(OpensearchApi):
                 region=context.region,
                 account=context.account_id,
             )
+            security_options = SecurityOptions.from_input(advanced_security_options)
 
             # "create" domain data
             store.opensearch_domains[domain_name] = get_domain_status(domain_key)
 
             # lazy-init the cluster (sets the Endpoint and Processing flag of the domain status)
             # TODO handle additional parameters (cluster config,...)
-            create_cluster(domain_key, engine_version, domain_endpoint_options)
+            create_cluster(domain_key, engine_version, domain_endpoint_options, security_options)
 
             # set the tags
             self.add_tags(context, domain_key.arn, tag_list)

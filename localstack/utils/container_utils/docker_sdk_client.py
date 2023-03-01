@@ -17,6 +17,7 @@ from localstack.utils.container_utils.container_client import (
     ContainerClient,
     ContainerException,
     DockerContainerStatus,
+    DockerPlatform,
     NoSuchContainer,
     NoSuchImage,
     NoSuchNetwork,
@@ -213,11 +214,11 @@ class SdkDockerClient(ContainerClient):
         except APIError as e:
             raise ContainerException() from e
 
-    def pull_image(self, docker_image: str) -> None:
+    def pull_image(self, docker_image: str, platform: Optional[DockerPlatform] = None) -> None:
         LOG.debug("Pulling Docker image: %s", docker_image)
         # some path in the docker image string indicates a custom repository
         try:
-            self.client().images.pull(docker_image)
+            self.client().images.pull(docker_image, platform=platform)
         except ImageNotFound:
             raise NoSuchImage(docker_image)
         except APIError as e:
@@ -506,13 +507,24 @@ class SdkDockerClient(ContainerClient):
         additional_flags: Optional[str] = None,
         workdir: Optional[str] = None,
         privileged: Optional[bool] = None,
+        labels: Optional[Dict[str, str]] = None,
+        platform: Optional[DockerPlatform] = None,
     ) -> str:
         LOG.debug("Creating container with attributes: %s", locals())
         extra_hosts = None
         if additional_flags:
-            env_vars, ports, mount_volumes, extra_hosts, network = Util.parse_additional_flags(
-                additional_flags, env_vars, ports, mount_volumes, network
+            parsed_flags = Util.parse_additional_flags(
+                additional_flags, env_vars, ports, mount_volumes, network, user, platform
             )
+            env_vars = parsed_flags.env_vars
+            ports = parsed_flags.ports
+            mount_volumes = parsed_flags.mounts
+            extra_hosts = parsed_flags.extra_hosts
+            network = parsed_flags.network
+            labels = parsed_flags.labels
+            user = parsed_flags.user
+            platform = parsed_flags.platform
+
         try:
             kwargs = {}
             if cap_add:
@@ -529,6 +541,8 @@ class SdkDockerClient(ContainerClient):
                 kwargs["working_dir"] = workdir
             if privileged:
                 kwargs["privileged"] = True
+            if labels:
+                kwargs["labels"] = labels
             mounts = None
             if mount_volumes:
                 mounts = Util.convert_mount_list_to_dict(mount_volumes)
@@ -548,13 +562,14 @@ class SdkDockerClient(ContainerClient):
                     network=network,
                     volumes=mounts,
                     extra_hosts=extra_hosts,
+                    platform=platform,
                     **kwargs,
                 )
 
             try:
                 container = create_container()
             except ImageNotFound:
-                self.pull_image(image_name)
+                self.pull_image(image_name, platform)
                 container = create_container()
             return container.id
         except ImageNotFound:

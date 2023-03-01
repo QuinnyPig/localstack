@@ -747,6 +747,13 @@ class InvalidPartOrder(ServiceException):
     UploadId: Optional[MultipartUploadId]
 
 
+class InvalidStorageClass(ServiceException):
+    code: str = "InvalidStorageClass"
+    sender_fault: bool = False
+    status_code: int = 400
+    StorageClassRequested: Optional[StorageClass]
+
+
 AbortDate = datetime
 
 
@@ -2246,11 +2253,6 @@ class ListBucketMetricsConfigurationsRequest(ServiceRequest):
     ExpectedBucketOwner: Optional[AccountId]
 
 
-class ListBucketsOutput(TypedDict, total=False):
-    Buckets: Optional[Buckets]
-    Owner: Optional[Owner]
-
-
 class MultipartUpload(TypedDict, total=False):
     UploadId: Optional[MultipartUploadId]
     Key: Optional[ObjectKey]
@@ -2332,6 +2334,17 @@ class ListObjectVersionsRequest(ServiceRequest):
     ExpectedBucketOwner: Optional[AccountId]
 
 
+class ListObjectsRequest(ServiceRequest):
+    Bucket: BucketName
+    Delimiter: Optional[Delimiter]
+    EncodingType: Optional[EncodingType]
+    Marker: Optional[Marker]
+    MaxKeys: Optional[MaxKeys]
+    Prefix: Optional[Prefix]
+    RequestPayer: Optional[RequestPayer]
+    ExpectedBucketOwner: Optional[AccountId]
+
+
 class Object(TypedDict, total=False):
     Key: Optional[ObjectKey]
     LastModified: Optional[LastModified]
@@ -2343,31 +2356,6 @@ class Object(TypedDict, total=False):
 
 
 ObjectList = List[Object]
-
-
-class ListObjectsOutput(TypedDict, total=False):
-    IsTruncated: Optional[IsTruncated]
-    Marker: Optional[Marker]
-    NextMarker: Optional[NextMarker]
-    Contents: Optional[ObjectList]
-    Name: Optional[BucketName]
-    Prefix: Optional[Prefix]
-    Delimiter: Optional[Delimiter]
-    MaxKeys: Optional[MaxKeys]
-    CommonPrefixes: Optional[CommonPrefixList]
-    EncodingType: Optional[EncodingType]
-    BucketRegion: Optional[BucketRegion]
-
-
-class ListObjectsRequest(ServiceRequest):
-    Bucket: BucketName
-    Delimiter: Optional[Delimiter]
-    EncodingType: Optional[EncodingType]
-    Marker: Optional[Marker]
-    MaxKeys: Optional[MaxKeys]
-    Prefix: Optional[Prefix]
-    RequestPayer: Optional[RequestPayer]
-    ExpectedBucketOwner: Optional[AccountId]
 
 
 class ListObjectsV2Output(TypedDict, total=False):
@@ -3090,6 +3078,25 @@ class PostResponse(TypedDict, total=False):
     RequestCharged: Optional[RequestCharged]
 
 
+class ListAllMyBucketsResult(TypedDict, total=False):
+    Buckets: Optional[Buckets]
+    Owner: Optional[Owner]
+
+
+class ListBucketResult(TypedDict, total=False):
+    IsTruncated: Optional[IsTruncated]
+    Marker: Optional[Marker]
+    NextMarker: Optional[NextMarker]
+    Contents: Optional[ObjectList]
+    Name: Optional[BucketName]
+    Prefix: Optional[Prefix]
+    Delimiter: Optional[Delimiter]
+    MaxKeys: Optional[MaxKeys]
+    CommonPrefixes: Optional[CommonPrefixList]
+    EncodingType: Optional[EncodingType]
+    BucketRegion: Optional[BucketRegion]
+
+
 class S3Api:
 
     service = "s3"
@@ -3693,7 +3700,7 @@ class S3Api:
     def list_buckets(
         self,
         context: RequestContext,
-    ) -> ListBucketsOutput:
+    ) -> ListAllMyBucketsResult:
         raise NotImplementedError
 
     @handler("ListMultipartUploads")
@@ -3738,7 +3745,7 @@ class S3Api:
         prefix: Prefix = None,
         request_payer: RequestPayer = None,
         expected_bucket_owner: AccountId = None,
-    ) -> ListObjectsOutput:
+    ) -> ListBucketResult:
         raise NotImplementedError
 
     @handler("ListObjectsV2")

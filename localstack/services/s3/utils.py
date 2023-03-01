@@ -19,6 +19,7 @@ from localstack.aws.api.s3 import (
     ObjectCannedACL,
     ObjectKey,
     Permission,
+    StorageClass,
 )
 from localstack.utils.aws import arns, aws_stack
 from localstack.utils.aws.arns import parse_arn
@@ -76,6 +77,17 @@ VALID_GRANTEE_PERMISSIONS = {
     Permission.WRITE_ACP,
 }
 
+VALID_STORAGE_CLASSES = [
+    StorageClass.STANDARD,
+    StorageClass.STANDARD_IA,
+    StorageClass.GLACIER,
+    StorageClass.GLACIER_IR,
+    StorageClass.REDUCED_REDUNDANCY,
+    StorageClass.ONEZONE_IA,
+    StorageClass.INTELLIGENT_TIERING,
+    StorageClass.DEEP_ARCHIVE,
+]
+
 # response header overrides the client may request
 ALLOWED_HEADER_OVERRIDES = {
     "ResponseContentType": "ContentType",
@@ -93,29 +105,33 @@ class InvalidRequest(ServiceException):
     status_code: int = 400
 
 
+def get_object_checksum_for_algorithm(checksum_algorithm: str, data: bytes):
+    match checksum_algorithm:
+        case ChecksumAlgorithm.CRC32:
+            return checksum_crc32(data)
+
+        case ChecksumAlgorithm.CRC32C:
+            return checksum_crc32c(data)
+
+        case ChecksumAlgorithm.SHA1:
+            return hash_sha1(data)
+
+        case ChecksumAlgorithm.SHA256:
+            return hash_sha256(data)
+
+        case _:
+            # TODO: check proper error? for now validated client side, need to check server response
+            raise InvalidRequest("The value specified in the x-amz-trailer header is not supported")
+
+
 def verify_checksum(checksum_algorithm: str, data: bytes, request: Dict):
     # TODO: you don't have to specify the checksum algorithm
     # you can use only the checksum-{algorithm-type} header
     # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
     key = f"Checksum{checksum_algorithm.upper()}"
-    checksum = request.get(key)
     # TODO: is there a message if the header is missing?
-    match checksum_algorithm:
-        case ChecksumAlgorithm.CRC32:
-            calculated_checksum = checksum_crc32(data)
-
-        case ChecksumAlgorithm.CRC32C:
-            calculated_checksum = checksum_crc32c(data)
-
-        case ChecksumAlgorithm.SHA1:
-            calculated_checksum = hash_sha1(data)
-
-        case ChecksumAlgorithm.SHA256:
-            calculated_checksum = hash_sha256(data)
-
-        case _:
-            # TODO: check proper error? for now validated client side, need to check server response
-            raise InvalidRequest("The value specified in the x-amz-trailer header is not supported")
+    checksum = request.get(key)
+    calculated_checksum = get_object_checksum_for_algorithm(checksum_algorithm, data)
 
     if calculated_checksum != checksum:
         raise InvalidRequest(
